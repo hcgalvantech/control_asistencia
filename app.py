@@ -5,7 +5,7 @@ import os
 import socket
 import random
 from pathlib import Path
-from utils import validate_time_for_subject, is_attendance_registered, save_attendance, validate_device_for_subject
+from utils import validate_time_for_subject, detect_mobile_device, is_attendance_registered, save_attendance, validate_device_for_subject
 from network import check_wifi_connection, is_ip_in_allowed_range, get_local_ip, get_argentina_datetime, get_device_id
 from database import load_students, load_attendance, load_schedule, load_admin_config, save_verification_code
 
