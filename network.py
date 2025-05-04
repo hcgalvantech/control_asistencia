@@ -166,3 +166,40 @@ def extract_mac_address():
     except:
         # In case of any errors, return a placeholder
         return "00:00:00:00:00:00"
+
+# Añadir a network.py
+def get_device_id():
+    """
+    Obtiene un identificador único del dispositivo
+    Combina MAC address, hostname y otros identificadores
+    """
+    device_identifiers = []
+    
+    # Intentar obtener MAC address
+    try:
+        mac = extract_mac_address()
+        if mac and mac != "00:00:00:00:00:00":
+            device_identifiers.append(mac)
+    except:
+        pass
+    
+    # Obtener hostname
+    try:
+        hostname = socket.gethostname()
+        device_identifiers.append(hostname)
+    except:
+        pass
+    
+    # Obtener IP local
+    try:
+        ip = get_local_ip()
+        device_identifiers.append(ip)
+    except:
+        pass
+    
+    # Combinar identificadores y generar hash único
+    import hashlib
+    combined = "-".join([str(x) for x in device_identifiers])
+    device_hash = hashlib.md5(combined.encode()).hexdigest()
+    
+    return device_hash
