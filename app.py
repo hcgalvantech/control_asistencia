@@ -176,6 +176,7 @@ def student_login():
         return
     
     students_df = load_students()
+    
     argentina_now, current_date, current_time = get_argentina_datetime()
     
     st.subheader("Registro de Asistencia")
@@ -233,6 +234,10 @@ def student_login():
             schedule_df = load_schedule()
             available_subjects = []
 
+            # Imprimir información de depuración (agregar temporalmente)
+            st.write(f"Fecha actual (Argentina): {current_date}")
+            st.write(f"Hora actual (Argentina): {current_time}")
+
             for subject in student_subjects:
                 # Obtener la comisión del estudiante para esta materia
                 student_commission = students_df[(students_df["DNI"].astype(str) == selected_dni) & 
@@ -244,7 +249,12 @@ def student_login():
                 
                 if not subject_schedule.empty:
                     for _, row in subject_schedule.iterrows():
+                        # Imprimir información de depuración (agregar temporalmente)
+                        st.write(f"Verificando: {subject} - {student_commission}")
+                        st.write(f"Horario: {row['FECHA']} de {row['INICIO']} a {row['FINAL']}")
+                    
                         if validate_time_for_subject(current_date, current_time, row["FECHA"], row["INICIO"], row["FINAL"]):
+                            st.write(f"¡Materia disponible encontrada!")
                             available_subjects.append(subject)
                             break  # Si encontramos al menos un horario válido, añadimos la materia
             # If there are available subjects, show selection                       

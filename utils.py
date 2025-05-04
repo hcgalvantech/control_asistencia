@@ -46,34 +46,76 @@ def validate_time_for_subject(current_date, current_time, schedule_date, start_t
         bool: True if current date and time are valid for this class, False otherwise
     """
     """Verificación mejorada de fecha y horario"""
-    start_time = parse_time(start_time)
-    end_time = parse_time(end_time)
-    if start_time is None or end_time is None:
+    """
+    Verificación mejorada de fecha y horario
+    Maneja correctamente los formatos de fecha DD/MM/YYYY y YYYY-MM-DD
+    """
+    # Debug info - descomentar para diagnosticar
+    # print(f"Validando: Fecha actual: {current_date}, Hora actual: {current_time}")
+    # print(f"Contra horario: Fecha: {schedule_date}, Inicio: {start_time}, Fin: {end_time}")
+    
+    # Parseo de tiempos
+    if isinstance(start_time, str):
+        parts = start_time.split(':')
+        if len(parts) >= 2:
+            try:
+                hour = int(parts[0])
+                minute = int(parts[1])
+                second = int(parts[2]) if len(parts) > 2 else 0
+                start_time = datetime.time(hour, minute, second)
+            except ValueError:
+                return False
+    
+    if isinstance(end_time, str):
+        parts = end_time.split(':')
+        if len(parts) >= 2:
+            try:
+                hour = int(parts[0])
+                minute = int(parts[1])
+                second = int(parts[2]) if len(parts) > 2 else 0
+                end_time = datetime.time(hour, minute, second)
+            except ValueError:
+                return False
+    
+    if not isinstance(start_time, datetime.time) or not isinstance(end_time, datetime.time):
         return False
-        
-    # Normalizar la fecha del horario
+    
+    # Parseo de fecha del horario
     schedule_date_obj = None
     if isinstance(schedule_date, str):
-        if '/' in schedule_date:  # formato DD/MM/YYYY
-            day, month, year = map(int, schedule_date.split('/'))
-            schedule_date_obj = datetime.date(year, month, day)
-        elif '-' in schedule_date:  # formato YYYY-MM-DD
-            year, month, day = map(int, schedule_date.split('-'))
-            schedule_date_obj = datetime.date(year, month, day)
+        try:
+            if '/' in schedule_date:  # formato DD/MM/YYYY
+                day, month, year = map(int, schedule_date.split('/'))
+                schedule_date_obj = datetime.date(year, month, day)
+            elif '-' in schedule_date:  # formato YYYY-MM-DD
+                year, month, day = map(int, schedule_date.split('-'))
+                schedule_date_obj = datetime.date(year, month, day)
+        except (ValueError, TypeError):
+            return False
     
-    if schedule_date_obj is None:
+    if not isinstance(schedule_date_obj, datetime.date):
         return False
         
+    # Convertir current_date a datetime.date si es string
+    if isinstance(current_date, str):
+        try:
+            if '/' in current_date:
+                day, month, year = map(int, current_date.split('/'))
+                current_date = datetime.date(year, month, day)
+            elif '-' in current_date:
+                year, month, day = map(int, current_date.split('-'))
+                current_date = datetime.date(year, month, day)
+        except (ValueError, TypeError):
+            return False
+    
     # Verificar si es el día de la clase
-    if current_date.year != schedule_date_obj.year or \
-       current_date.month != schedule_date_obj.month or \
-       current_date.day != schedule_date_obj.day:
+    if current_date != schedule_date_obj:
         return False
-        
+    
     # Convertir horas a minutos para comparación
     def time_to_minutes(t):
         return t.hour * 60 + t.minute
-        
+    
     current_minutes = time_to_minutes(current_time)
     start_minutes = time_to_minutes(start_time)
     end_minutes = time_to_minutes(end_time)
@@ -131,6 +173,12 @@ def validate_device_for_subject(device_id, subject, date_str):
 
 def save_attendance(dni, name, subject, commission, date, time, device, ip, device_id=None):
     """Save attendance record to CSV file and register device usage"""
+    from network import get_argentina_datetime
+    
+    # Obtener fecha y hora actual de Argentina
+    argentina_now, _, _ = get_argentina_datetime()
+    
+    """Save attendance record to CSV file and register device usage"""
     new_record = {
         'DNI': dni,
         'APELLIDO Y NOMBRE': name,
@@ -170,7 +218,7 @@ def save_attendance(dni, name, subject, commission, date, time, device, ip, devi
             'DNI': dni,
             'MATERIA': subject,
             'FECHA': date,
-            'TIMESTAMP': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            'TIMESTAMP': argentina_now.strftime('%Y-%m-%d %H:%M:%S')
         }
         
         device_df = pd.concat([device_df, pd.DataFrame([device_record])], ignore_index=True)

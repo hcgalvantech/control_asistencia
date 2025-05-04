@@ -61,20 +61,24 @@ def save_admin_config(config):
 
 def save_verification_code(dni, phone, code):
     """Save verification code to CSV"""
-    verification_path = 'data/verification_codes.csv'
+    from network import get_argentina_datetime
     
+    verification_path = 'data/verification_codes.csv'
     if os.path.exists(verification_path):
         verification_df = pd.read_csv(verification_path)
     else:
         verification_df = pd.DataFrame(columns=['DNI', 'PHONE', 'CODE', 'TIMESTAMP', 'VERIFIED'])
     
+    # Obtener hora de Argentina
+    argentina_now, _, _ = get_argentina_datetime()
+    argentina_timestamp = argentina_now.strftime('%Y-%m-%d %H:%M:%S')
+    
     # Check if there's already a code for this user
     existing = verification_df[verification_df['DNI'].astype(str) == str(dni)]
-    
     if not existing.empty:
         # Update existing code
         verification_df.loc[verification_df['DNI'].astype(str) == str(dni), 'CODE'] = code
-        verification_df.loc[verification_df['DNI'].astype(str) == str(dni), 'TIMESTAMP'] = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        verification_df.loc[verification_df['DNI'].astype(str) == str(dni), 'TIMESTAMP'] = argentina_timestamp
         verification_df.loc[verification_df['DNI'].astype(str) == str(dni), 'VERIFIED'] = False
     else:
         # Add new code
@@ -82,7 +86,7 @@ def save_verification_code(dni, phone, code):
             'DNI': dni,
             'PHONE': phone,
             'CODE': code,
-            'TIMESTAMP': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'TIMESTAMP': argentina_timestamp,
             'VERIFIED': False
         }
         verification_df = pd.concat([verification_df, pd.DataFrame([new_record])], ignore_index=True)
