@@ -232,20 +232,22 @@ def student_login():
             # Check which subjects are available at current time
             schedule_df = load_schedule()
             available_subjects = []
-            
+
             for subject in student_subjects:
-                subject_schedule = schedule_df[schedule_df["MATERIA"] == subject]
+                # Obtener la comisión del estudiante para esta materia
+                student_commission = students_df[(students_df["DNI"].astype(str) == selected_dni) & 
+                                                (students_df["MATERIA"] == subject)]["COMISION"].iloc[0]
+                
+                # Filtrar horarios por materia y comisión
+                subject_schedule = schedule_df[(schedule_df["MATERIA"] == subject) & 
+                                            (schedule_df["COMISION"] == student_commission)]
+                
                 if not subject_schedule.empty:
                     for _, row in subject_schedule.iterrows():
-                        # Convert date format if needed
-                        schedule_date = row["FECHA"]
-                        if '/' in schedule_date:  # If date is in DD/MM/YYYY format
-                            day, month, year = schedule_date.split('/')
-                            schedule_date = f"{year}-{month}-{day}"
-                            
-                        if validate_time_for_subject(current_date, current_time, schedule_date, row["INICIO"], row["FINAL"]):
+                        if validate_time_for_subject(current_date, current_time, row["FECHA"], row["INICIO"], row["FINAL"]):
                             available_subjects.append(subject)
-            
+                            break  # Si encontramos al menos un horario válido, añadimos la materia
+            # If there are available subjects, show selection                       
             if available_subjects:
                 selected_subject = st.selectbox("Materia disponible:", available_subjects)
                 

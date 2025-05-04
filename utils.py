@@ -46,26 +46,34 @@ def validate_time_for_subject(current_date, current_time, schedule_date, start_t
         bool: True if current date and time are valid for this class, False otherwise
     """
     """Verificación mejorada de fecha y horario"""
-    # Parseo de tiempos
     start_time = parse_time(start_time)
     end_time = parse_time(end_time)
-    
     if start_time is None or end_time is None:
         return False
+        
+    # Normalizar la fecha del horario
+    schedule_date_obj = None
+    if isinstance(schedule_date, str):
+        if '/' in schedule_date:  # formato DD/MM/YYYY
+            day, month, year = map(int, schedule_date.split('/'))
+            schedule_date_obj = datetime.date(year, month, day)
+        elif '-' in schedule_date:  # formato YYYY-MM-DD
+            year, month, day = map(int, schedule_date.split('-'))
+            schedule_date_obj = datetime.date(year, month, day)
     
-    # Parseo y normalización de fecha
-    schedule_date = parse_date(schedule_date)
-    if schedule_date is None:
+    if schedule_date_obj is None:
         return False
-
+        
     # Verificar si es el día de la clase
-    if current_date != schedule_date:
+    if current_date.year != schedule_date_obj.year or \
+       current_date.month != schedule_date_obj.month or \
+       current_date.day != schedule_date_obj.day:
         return False
-    
+        
     # Convertir horas a minutos para comparación
     def time_to_minutes(t):
         return t.hour * 60 + t.minute
-    
+        
     current_minutes = time_to_minutes(current_time)
     start_minutes = time_to_minutes(start_time)
     end_minutes = time_to_minutes(end_time)
@@ -102,14 +110,21 @@ def validate_device_for_subject(device_id, subject, date_str):
         # Si no existe archivo, crear uno vacío
         pd.DataFrame(columns=['DEVICE_ID', 'DNI', 'MATERIA', 'FECHA', 'TIMESTAMP']).to_csv(device_usage_path, index=False)
         return True
-    
+        
     device_df = pd.read_csv(device_usage_path)
     
+    # Normalizar formato de fecha para comparación
+    if '/' in date_str:  # Si es DD/MM/YYYY
+        day, month, year = map(int, date_str.split('/'))
+        date_normalized = f"{year}-{month:02d}-{day:02d}"
+    else:
+        date_normalized = date_str
+        
     # Verificar si el dispositivo ya se usó para esta materia y fecha
     matching_records = device_df[
         (device_df['DEVICE_ID'] == device_id) & 
         (device_df['MATERIA'] == subject) & 
-        (device_df['FECHA'] == date_str)
+        (device_df['FECHA'] == date_normalized)
     ]
     
     return matching_records.empty
@@ -172,20 +187,42 @@ def check_schedule_conflicts():
     Verificación mejorada de conflictos en horarios
     Considera fecha + comisión + horarios
     """
+    """
+    Verificación mejorada de conflictos en horarios
+    Considera fecha + comisión + horarios
+    """
     from database import load_schedule
     schedule_df = load_schedule()
     conflicts = []
     
-    # Convertir strings de tiempo y fecha a objetos datetime
-    schedule_df['INICIO'] = schedule_df['INICIO'].apply(parse_time)
-    schedule_df['FINAL'] = schedule_df['FINAL'].apply(parse_time)
+    # Convertir strings de tiempo a objetos datetime.time
+    def convert_time(time_str):
+        if isinstance(time_str, str):
+            try:
+                hour, minute, second = map(int, time_str.split(':'))
+                return datetime.time(hour, minute, second)
+            except ValueError:
+                return None
+        return time_str
     
-    if 'FECHA' in schedule_df.columns:
-        schedule_df['FECHA_OBJ'] = schedule_df['FECHA'].apply(parse_date)
-    else:
-        # Si no hay columna fecha, usar fecha actual
-        today = datetime.date.today()
-        schedule_df['FECHA_OBJ'] = today
+    # Convertir strings de fecha a objetos datetime.date
+    def convert_date(date_str):
+        if isinstance(date_str, str):
+            try:
+                if '/' in date_str:  # DD/MM/YYYY
+                    day, month, year = map(int, date_str.split('/'))
+                    return datetime.date(year, month, day)
+                elif '-' in date_str:  # YYYY-MM-DD
+                    year, month, day = map(int, date_str.split('-'))
+                    return datetime.date(year, month, day)
+            except ValueError:
+                return None
+        return date_str
+    
+    # Aplicar conversiones
+    schedule_df['INICIO_OBJ'] = schedule_df['INICIO'].apply(convert_time)
+    schedule_df['FINAL_OBJ'] = schedule_df['FINAL'].apply(convert_time)
+    schedule_df['FECHA_OBJ'] = schedule_df['FECHA'].apply(convert_date)
     
     # Verificar cada par de horarios
     for i, row1 in schedule_df.iterrows():
@@ -193,30 +230,29 @@ def check_schedule_conflicts():
             if i < j:  # Verificar cada par solo una vez
                 # Verificar si las fechas son iguales
                 if row1['FECHA_OBJ'] == row2['FECHA_OBJ']:
-                    # Verificar superposición de horarios
-                    row1_start = row1['INICIO'] 
-                    row1_end = row1['FINAL']
-                    row2_start = row2['INICIO']
-                    row2_end = row2['FINAL']
-                    
                     # Verificar comisiones iguales
-                    same_commission = row1['COMISION'] == row2['COMISION'] 
+                    same_commission = row1['COMISION'] == row2['COMISION']
                     
-                    # Verificar superposición de horarios
-                    if (row1_start <= row2_end and row1_end >= row2_start) and same_commission:
-                        conflicts.append({
-                            'materia1': row1['MATERIA'],
-                            'comision1': row1['COMISION'],
-                            'fecha1': row1['FECHA'] if 'FECHA' in row1 else "N/A",
-                            'inicio1': row1_start.strftime('%H:%M:%S'),
-                            'final1': row1_end.strftime('%H:%M:%S'),
-                            'materia2': row2['MATERIA'],
-                            'comision2': row2['COMISION'],
-                            'fecha2': row2['FECHA'] if 'FECHA' in row2 else "N/A", 
-                            'inicio2': row2_start.strftime('%H:%M:%S'),
-                            'final2': row2_end.strftime('%H:%M:%S')
-                        })
-    
+                    if same_commission:
+                        # Verificar superposición de horarios
+                        row1_start = row1['INICIO_OBJ'] 
+                        row1_end = row1['FINAL_OBJ']
+                        row2_start = row2['INICIO_OBJ']
+                        row2_end = row2['FINAL_OBJ']
+                        
+                        if (row1_start <= row2_end and row1_end >= row2_start):
+                            conflicts.append({
+                                'materia1': row1['MATERIA'],
+                                'comision1': row1['COMISION'],
+                                'fecha1': row1['FECHA'],
+                                'inicio1': row1['INICIO'],
+                                'final1': row1['FINAL'],
+                                'materia2': row2['MATERIA'],
+                                'comision2': row2['COMISION'],
+                                'fecha2': row2['FECHA'],
+                                'inicio2': row2['INICIO'],
+                                'final2': row2['FINAL']
+                            })
     return conflicts
 
 # Añadir a utils.py
