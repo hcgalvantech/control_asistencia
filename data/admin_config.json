@@ -1,0 +1,5 @@
+{
+    "allowed_ip_ranges": ["192.168.1.0/24", "192.168.0.0/24", "172.16.0.0/12", "10.0.0.0/8"],
+    "admin_username": "admin",
+    "admin_password": "admin123"
+}
