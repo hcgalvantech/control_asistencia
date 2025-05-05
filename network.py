@@ -12,7 +12,7 @@ def check_wifi_connection():
     Returns True if connected, False otherwise
     """
     # Para desarrollo local, siempre devolver True
-    return True
+    # return True
     
     system = platform.system()
     
