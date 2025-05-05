@@ -5,12 +5,18 @@ import platform
 import re
 import datetime
 import pytz
+import os
 
 def check_wifi_connection():
     """
     Check if the device is connected to WiFi
     Returns True if connected, False otherwise
     """
+    """Check if device is connected to WiFi"""
+    # Para cloud deployment o desarrollo local
+    if os.environ.get('STREAMLIT_SHARING') or os.environ.get('STREAMLIT_CLOUD'):
+        return True
+    
     # Para desarrollo local, siempre devolver True
     # return True
     
