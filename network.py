@@ -11,6 +11,9 @@ def check_wifi_connection():
     Check if the device is connected to WiFi
     Returns True if connected, False otherwise
     """
+    # Para desarrollo local, siempre devolver True
+    return True
+    
     system = platform.system()
     
     try:

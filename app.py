@@ -18,6 +18,11 @@ st.set_page_config(
 )
 
 # Initialize session state variables
+if 'attendance_registered' not in st.session_state:
+    st.session_state.attendance_registered = False
+if 'registration_info' not in st.session_state:
+    st.session_state.registration_info = {}
+# -----------------------    
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 if 'student_data' not in st.session_state:
@@ -32,6 +37,7 @@ if 'phone_verified' not in st.session_state:
     st.session_state.phone_verified = False
 if 'device_id' not in st.session_state:
     st.session_state.device_id = get_device_id()
+    
 
 # Create data directory and files if they don't exist
 if not os.path.exists('data'):
@@ -125,16 +131,20 @@ def validate_network():
     admin_config = load_admin_config()
     allowed_ranges = admin_config.get("allowed_ip_ranges", ["192.168.1.0/24"])
     
+    # Si estamos en desarrollo local (localhost), omitir verificación de red
+    client_ip = get_local_ip()
+    if client_ip == "127.0.0.1" or client_ip.startswith("localhost"):
+        st.info("Ejecutando en modo de desarrollo local")
+        return True
+        
     if not check_wifi_connection():
         st.error("❌ Debe estar conectado a una red WiFi para utilizar el sistema")
         return False
     
-    # Use our improved function to get the local IP address
-    client_ip = get_local_ip()
     if not is_ip_in_allowed_range(client_ip, allowed_ranges):
         st.error(f"❌ Su dirección IP ({client_ip}) está fuera del rango permitido")
         return False
-    
+        
     return True
 
 # Generate verification code for phone
@@ -174,7 +184,61 @@ def student_login():
     # Validación de red
     if not validate_network():
         return
-    
+    # Al inicio de la función student_login(), después de validar la red:
+    if st.session_state.attendance_registered:
+        st.success(f"✅ Asistencia registrada correctamente")
+        
+        # Panel con información de la asistencia registrada
+        st.info(f"""
+        **Detalles del registro:**
+        - **Estudiante:** {st.session_state.registration_info['student_name']}
+        - **Materia:** {st.session_state.registration_info['subject']}
+        - **Fecha:** {st.session_state.registration_info['date']}
+        - **Hora:** {st.session_state.registration_info['time']}
+        """)
+        
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
+            if st.button("Salir", type="primary"):
+                # Limpiar todas las variables de sesión
+                st.session_state.authenticated = False
+                st.session_state.student_data = None
+                st.session_state.verification_step = False
+                st.session_state.verification_code = None
+                st.session_state.phone_verified = False
+                st.session_state.attendance_registered = False
+                st.session_state.registration_info = {}
+                st.rerun()
+        
+        with col2:
+            if st.button("Registrar otra asistencia"):
+                # Mantener algunas variables pero reiniciar el proceso
+                st.session_state.attendance_registered = False
+                st.session_state.registration_info = {}
+                st.rerun()
+        
+        # Mensaje de redirección automática con contador
+        import time
+        placeholder = st.empty()
+        for i in range(15, 0, -1):
+            placeholder.warning(f"Se cerrará automáticamente en {i} segundos...")
+            time.sleep(1)
+        
+        # Después de la cuenta regresiva, limpia todo y regresa al inicio
+        st.session_state.authenticated = False
+        st.session_state.student_data = None
+        st.session_state.verification_step = False
+        st.session_state.verification_code = None
+        st.session_state.phone_verified = False
+        st.session_state.attendance_registered = False
+        st.session_state.registration_info = {}
+        st.rerun()
+        
+        # Detener la ejecución aquí para no mostrar el resto del formulario
+        return
+
+    ####
     students_df = load_students()
     
     argentina_now, current_date, current_time = get_argentina_datetime()
@@ -235,8 +299,8 @@ def student_login():
             available_subjects = []
 
             # Imprimir información de depuración (agregar temporalmente)
-            st.write(f"Fecha actual (Argentina): {current_date}")
-            st.write(f"Hora actual (Argentina): {current_time}")
+            # st.write(f"Fecha actual (Argentina): {current_date}")
+            # st.write(f"Hora actual (Argentina): {current_time}")
 
             for subject in student_subjects:
                 # Obtener la comisión del estudiante para esta materia
@@ -250,8 +314,8 @@ def student_login():
                 if not subject_schedule.empty:
                     for _, row in subject_schedule.iterrows():
                         # Imprimir información de depuración (agregar temporalmente)
-                        st.write(f"Verificando: {subject} - {student_commission}")
-                        st.write(f"Horario: {row['FECHA']} de {row['INICIO']} a {row['FINAL']}")
+                        # st.write(f"Verificando: {subject} - {student_commission}")
+                        # st.write(f"Horario: {row['FECHA']} de {row['INICIO']} a {row['FINAL']}")
                     
                         if validate_time_for_subject(current_date, current_time, row["FECHA"], row["INICIO"], row["FINAL"]):
                             st.write(f"¡Materia disponible encontrada!")
@@ -273,18 +337,16 @@ def student_login():
                         st.error("Este dispositivo ya fue utilizado para registrar asistencia en esta materia y fecha.")
                     else:
                         if st.button("Registrar Asistencia"):
-                            # Get current device information
+                            # Obtener información actual del dispositivo
                             device_info = {
                                 "ip": get_local_ip(),
                                 "hostname": socket.gethostname(),
                                 "device_id": device_id
                             }
-                            
-                            # Get commission for this subject
+                            # Obtener comisión para esta materia
                             commission = students_df[(students_df["DNI"].astype(str) == selected_dni) & 
-                                                   (students_df["MATERIA"] == selected_subject)]["COMISION"].iloc[0]
-                            
-                            # Save attendance
+                                                (students_df["MATERIA"] == selected_subject)]["COMISION"].iloc[0]
+                            # Guardar asistencia
                             save_attendance(
                                 selected_dni,
                                 student_data['APELLIDO Y NOMBRE'],
@@ -297,13 +359,14 @@ def student_login():
                                 device_info["device_id"]
                             )
                             
-                            st.success(f"Asistencia registrada para {selected_subject} a las {current_time.strftime('%H:%M:%S')}")
-                            # Clear student authentication to prevent multiple registrations
-                            st.session_state.authenticated = False
-                            st.session_state.student_data = None
-                            st.session_state.verification_step = False
-                            st.session_state.verification_code = None
-                            st.session_state.phone_verified = False
+                            # En lugar de reiniciar inmediatamente, establecer estado de confirmación
+                            st.session_state.attendance_registered = True
+                            st.session_state.registration_info = {
+                                "student_name": student_data['APELLIDO Y NOMBRE'],
+                                "subject": selected_subject,
+                                "time": current_time.strftime('%H:%M:%S'),
+                                "date": current_date.strftime('%d/%m/%Y')
+                            }
                             st.rerun()
             else:
                 st.warning("No hay materias disponibles en este horario.")
