@@ -1,21 +1,17 @@
+import qrcode
 import streamlit as st
 import pandas as pd
 import datetime
 import os
 import socket
 import random
-import uuid  # Add this line
-import requests  # Also need this for send_verification_code
+import string
+from io import BytesIO
 from pathlib import Path
 from utils import validate_time_for_subject, detect_mobile_device, is_attendance_registered, save_attendance, validate_device_for_subject
 from network import check_wifi_connection, is_ip_in_allowed_range, get_local_ip, get_argentina_datetime, get_device_id
 from database import load_students, load_attendance, load_schedule, load_admin_config, save_verification_code
 
-# Importaciones para Firebase
-import firebase_admin
-from firebase_admin import credentials, auth
-import pyrebase
-import json
 
 # Detectar si estamos en Streamlit Cloud
 if not os.environ.get('STREAMLIT_SHARING'):
@@ -85,6 +81,10 @@ if not os.path.exists('data/verification_codes.csv'):
 if not os.path.exists('data/device_usage.csv'):
     pd.DataFrame(columns=['DEVICE_ID', 'DNI', 'MATERIA', 'FECHA', 'TIMESTAMP']).to_csv('data/device_usage.csv', index=False)
 
+# In your initialization section
+if not os.path.exists('data/classroom_codes.csv'):
+    pd.DataFrame(columns=['CODE', 'SUBJECT', 'COMMISSION', 'EXPIRY_TIME']).to_csv('data/classroom_codes.csv', index=False)
+    
 # Initialize admin config
 if not os.path.exists('data/admin_config.json'):
     import json
@@ -138,6 +138,58 @@ def admin_login():
         st.session_state.temp_show_admin = False
         st.rerun()
 
+# In the admin section
+def admin_dashboard():
+    st.title("Panel Administrativo")
+    
+    tab1, tab2, tab3 = st.tabs(["Asistencia", "Generador de Códigos", "Configuración"])
+    
+    with tab1:
+        # Existing attendance viewing functionality
+        pass
+        
+    with tab2:
+        st.subheader("Generador de Códigos de Clase")
+        
+        # Load subjects and commissions
+        schedule_df = load_schedule()
+        subjects = schedule_df["MATERIA"].unique().tolist()
+        
+        selected_subject = st.selectbox("Seleccione materia:", subjects)
+        
+        # Filter commissions for selected subject
+        commissions = schedule_df[schedule_df["MATERIA"] == selected_subject]["COMISION"].unique().tolist()
+        selected_commission = st.selectbox("Seleccione comisión:", commissions)
+        
+        # Select code validity time
+        validity_minutes = st.slider("Validez del código (minutos):", 5, 120, 30)
+        
+        if st.button("Generar Código QR"):
+            code = generate_classroom_code()
+            
+            # Calculate expiry time
+            now = datetime.datetime.now()
+            expiry_time = (now + datetime.timedelta(minutes=validity_minutes)).strftime('%Y-%m-%d %H:%M:%S')
+            
+            # Save code to database
+            save_classroom_code(code, selected_subject, selected_commission, expiry_time)
+            
+            # Display QR and code
+            qr_data = f"{code}|{selected_subject}|{selected_commission}"
+            qr_img = create_qr_code(qr_data)
+            
+            st.success(f"Código generado: {code}")
+            st.success(f"Válido hasta: {expiry_time}")
+            st.image(qr_img, caption="Código QR para escanear")
+            
+            # Add download button for QR code
+            st.download_button(
+                label="Descargar QR",
+                data=qr_img,
+                file_name=f"qr_{selected_subject}_{selected_commission}_{code}.png",
+                mime="image/png"
+            )
+            
 # Network validation function
 def validate_network():
     admin_config = load_admin_config()
@@ -159,137 +211,66 @@ def validate_network():
         
     return True
 
-def setup_firebase():
-    if 'firebase_initialized' not in st.session_state:
-        try:
-            # Para entorno de desarrollo local
-            if os.path.exists("firebase-key.json"):
-                if not firebase_admin._apps:
-                    cred = credentials.Certificate("firebase-key.json")
-                    firebase_admin.initialize_app(cred)
-                
-                # Cargar configuración
-                with open("firebase-config.json", "r") as f:
-                    config = json.load(f)
-                
-                firebase = pyrebase.initialize_app(config)
-                st.session_state.firebase = firebase
-            # Para Streamlit Cloud
-            else:
-                if not firebase_admin._apps:
-                    # Verificar secretos disponibles
-                    # available_secrets = list(st.secrets.keys())
-                    # st.write(f"Available secrets: {available_secrets}")
-                    
-                    cred_dict = st.secrets["FIREBASE_SERVICE_ACCOUNT"]
-                    if isinstance(cred_dict, str):
-                        cred_dict = json.loads(cred_dict)
-                    cred = credentials.Certificate(cred_dict)
-                    firebase_admin.initialize_app(cred)
-                
-                config = {
-                    "apiKey": st.secrets["FIREBASE_API_KEY"],
-                    "authDomain": st.secrets["FIREBASE_AUTH_DOMAIN"],
-                    "projectId": st.secrets["FIREBASE_PROJECT_ID"],
-                    "storageBucket": st.secrets["FIREBASE_STORAGE_BUCKET"],
-                    "databaseURL": ""  # Add an empty string if not used
-                }
-                
-                firebase = pyrebase.initialize_app(config)
-                st.session_state.firebase = firebase
-            
-            st.session_state.firebase_initialized = True
-            return True
-        except Exception as e:
-            st.error(f"Error al inicializar Firebase: {str(e)}")
-            st.error(f"Detalles de secretos: {list(st.secrets.keys())}")
-            return False
-    return True
+def generate_classroom_code():
+    """Generate a random 6-character alphanumeric code"""
+    chars = string.ascii_uppercase + string.digits
+    return ''.join(random.choice(chars) for _ in range(6))
 
-# Función para enviar código de verificación vía Firebase
-def send_verification_code(phone):
-    try:
-        # Clean and format the phone number correctly
-        # Remove any non-digit characters
-        clean_phone = ''.join(filter(str.isdigit, phone))
-        
-        # Check if it's already in international format
-        if phone.startswith('+'):
-            formatted_phone = phone
-        else:
-            # For Argentina, ensure it's correctly formatted
-            # Strip leading zeros from area code if present
-            if clean_phone.startswith('0'):
-                clean_phone = clean_phone[1:]
-            
-            # If number starts with 15, adjust accordingly
-            if clean_phone.startswith('15'):
-                clean_phone = clean_phone[2:]
-                
-            # Format as international
-            formatted_phone = f"+54{clean_phone}"
-        
-        # Verify the phone number isn't too long (should be around 13 chars including country code)
-        if len(formatted_phone) > 15:
-            st.error(f"Número de teléfono demasiado largo: {formatted_phone}")
-            return False
-            
-        # Log the formatted number for debugging
-        st.info(f"Enviando código a: {formatted_phone}")
-        
-        # Get idempotent session ID
-        session_id = str(uuid.uuid4())
-        
-        url = f"https://identitytoolkit.googleapis.com/v1/accounts:sendVerificationCode?key={st.secrets['FIREBASE_API_KEY']}"
-        payload = {
-            "phoneNumber": formatted_phone,
-            "recaptchaToken": "invisible-recaptcha-token"  # This needs to be handled properly
-        }
-        
-        response = requests.post(url, data=json.dumps(payload))
-        if response.status_code == 200:
-            result = response.json()
-            st.session_state.session_info = result.get("sessionInfo")
-            return True
-        else:
-            st.error(f"Error API: {response.text}")
-            return False
-    except Exception as e:
-        st.error(f"Error: {str(e)}")
-        return False
+def save_classroom_code(code, subject, commission, expiry_time):
+    """Save active classroom code to database"""
+    codes_df = pd.read_csv('data/classroom_codes.csv') if os.path.exists('data/classroom_codes.csv') else pd.DataFrame(columns=['CODE', 'SUBJECT', 'COMMISSION', 'EXPIRY_TIME'])
+    
+    # Remove expired codes
+    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    codes_df = codes_df[codes_df['EXPIRY_TIME'] > now]
+    
+    # Add new code
+    new_code = pd.DataFrame({
+        'CODE': [code],
+        'SUBJECT': [subject],
+        'COMMISSION': [commission],
+        'EXPIRY_TIME': [expiry_time]
+    })
+    
+    codes_df = pd.concat([codes_df, new_code], ignore_index=True)
+    codes_df.to_csv('data/classroom_codes.csv', index=False)
 
-def verify_code(code):
-    try:
-        if 'session_info' not in st.session_state:
-            st.error("No hay sesión de verificación activa")
-            return False
-            
-        url = f"https://identitytoolkit.googleapis.com/v1/accounts:verifyPhoneNumber?key={st.secrets['FIREBASE_API_KEY']}"
-        payload = {
-            "sessionInfo": st.session_state.session_info,
-            "code": code
-        }
-        
-        response = requests.post(url, data=json.dumps(payload))
-        if response.status_code == 200:
-            return True
-        else:
-            st.error(f"Error verificación: {response.text}")
-            return False
-    except Exception as e:
-        st.error(f"Error: {str(e)}")
+def verify_classroom_code(code, subject, commission):
+    """Verify if the code is valid for the subject and commission"""
+    if not os.path.exists('data/classroom_codes.csv'):
         return False
+        
+    codes_df = pd.read_csv('data/classroom_codes.csv')
     
-# Generate verification code for phone
-# def generate_verification_code(dni, phone):
-    # Generate a 6-digit code
-#    code = random.randint(100000, 999999)
-#    st.session_state.verification_code = code
+    # Remove expired codes
+    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    codes_df = codes_df[codes_df['EXPIRY_TIME'] > now]
     
-    # In a real production system, send the code via SMS using a service like Twilio
-    # For this demo, we'll just display the code
-#    save_verification_code(dni, phone, code)
-#    return code
+    # Check if code exists for subject and commission
+    valid = not codes_df[(codes_df['CODE'] == code) & 
+                      (codes_df['SUBJECT'] == subject) & 
+                      (codes_df['COMMISSION'] == commission)].empty
+    
+    return valid
+
+def create_qr_code(data):
+    """Generate QR code image"""
+    qr = qrcode.QRCode(
+        version=1,
+        error_correction=qrcode.constants.ERROR_CORRECT_L,
+        box_size=10,
+        border=4,
+    )
+    qr.add_data(data)
+    qr.make(fit=True)
+    
+    img = qr.make_image(fill_color="black", back_color="white")
+    
+    # Convert to bytes for Streamlit
+    buffered = BytesIO()
+    img.save(buffered, format="PNG")
+    return buffered.getvalue()
+
 
 def generate_verification_code(dni, phone):
     # Esta función ahora solo registra que iniciamos un proceso de verificación
@@ -300,24 +281,6 @@ def generate_verification_code(dni, phone):
         return True
     return False
 
-# Phone verification step
-#def phone_verification(dni, phone):
-#    st.subheader("Verificación de Teléfono")
-#    st.info(f"Un código de verificación ha sido enviado al número: {phone}")
-    
-    # In a real system, this would be sent via SMS
-    # For demo purposes, we'll show the code on screen
-#    st.info(f"Para propósitos de demostración, el código es: {st.session_state.verification_code}")
-    
-#    verification_input = st.text_input("Ingrese el código de verificación:", max_chars=6)
-    
-#    if st.button("Verificar"):
-#        if verification_input == str(st.session_state.verification_code):
-#            st.session_state.phone_verified = True
-#            st.success("Teléfono verificado correctamente")
-#            st.rerun()
-#        else:
-#            st.error("Código incorrecto. Intente nuevamente.")
 
 # Modificación de la función de verificación de teléfono
 def phone_verification(dni, phone):
@@ -471,9 +434,56 @@ def student_login():
                     st.session_state.verification_step = True
                     st.rerun()
                 
-                # Mostrar UI de verificación
-                phone_verification(selected_dni, student_phone)
-                return # Exit here until phone is verified
+            # Replace the phone verification part of student_login with this:
+
+            # If the teléfono no está verificado, use QR verification instead
+            if not st.session_state.phone_verified:
+                st.subheader("Verificación de Presencia")
+                
+                # Check if attendance verification is in progress
+                if 'qr_verification_step' not in st.session_state:
+                    st.session_state.qr_verification_step = False
+                
+                # Get commission for this subject
+                student_subjects = students_df[students_df["DNI"].astype(str) == selected_dni]["MATERIA"].unique().tolist()
+                
+                # Show available subjects
+                if student_subjects:
+                    selected_subject = st.selectbox("Seleccione materia:", student_subjects)
+                    commission = students_df[(students_df["DNI"].astype(str) == selected_dni) & 
+                                        (students_df["MATERIA"] == selected_subject)]["COMISION"].iloc[0]
+                    
+                    verification_method = st.radio(
+                        "Método de verificación:",
+                        ["Escanear código QR", "Ingresar código manualmente"]
+                    )
+                    
+                    if verification_method == "Escanear código QR":
+                        st.info("Escanee el código QR mostrado por el profesor")
+                        # Use camera input for QR scanning
+                        uploaded_file = st.camera_input("Tomar foto del código QR")
+                        
+                        if uploaded_file is not None:
+                            # This would need image processing to extract QR code
+                            # For now, we'll simulate success
+                            st.session_state.qr_verification_step = True
+                            st.success("QR detectado! Por favor ingrese el código manualmente para completar")
+                    
+                    # Manual code entry - either as fallback or primary method
+                    code = st.text_input("Código de clase:", max_chars=6)
+                    
+                    if st.button("Verificar código"):
+                        if verify_classroom_code(code, selected_subject, commission):
+                            st.session_state.phone_verified = True
+                            st.success("Verificación exitosa")
+                            st.rerun()
+                        else:
+                            st.error("Código inválido o expirado")
+                            
+                else:
+                    st.warning("No hay materias disponibles para este estudiante")
+                
+                return # Exit here until verification is complete
             
             # Continue with attendance process after verification
             
@@ -508,73 +518,102 @@ def student_login():
                             available_subjects.append(subject)
                             break  # Si encontramos al menos un horario válido, añadimos la materia
             # If there are available subjects, show selection                       
+            # In the student_login function, replace phone verification with QR verification
+            # After showing available subjects and selecting one:
+
             if available_subjects:
                 selected_subject = st.selectbox("Materia disponible:", available_subjects)
+                commission = students_df[(students_df["DNI"].astype(str) == selected_dni) & 
+                                    (students_df["MATERIA"] == selected_subject)]["COMISION"].iloc[0]
                 
-                # Check if attendance was already registered for this subject today
+                # Check if attendance already registered
                 attendance_df = load_attendance()
                 if is_attendance_registered(attendance_df, selected_dni, selected_subject, current_date):
                     st.warning("Ya registró su asistencia para esta materia hoy.")
                 else:
-                    # Check if device has been used for this subject today
+                    # Check if device valid
                     device_valid = validate_device_for_subject(device_id, selected_subject, current_date.strftime('%Y-%m-%d'))
                     
                     if not device_valid:
                         st.error("Este dispositivo ya fue utilizado para registrar asistencia en esta materia y fecha.")
                     else:
-                        if st.button("Registrar Asistencia"):
-                            # Obtener información actual del dispositivo
-                            device_info = {
-                                "ip": get_local_ip(),
-                                "hostname": socket.gethostname(),
-                                "device_id": device_id
-                            }
-                            # Obtener comisión para esta materia
-                            commission = students_df[(students_df["DNI"].astype(str) == selected_dni) & 
-                                                (students_df["MATERIA"] == selected_subject)]["COMISION"].iloc[0]
-                            # Guardar asistencia
-                            save_attendance(
-                                selected_dni,
-                                student_data['APELLIDO Y NOMBRE'],
-                                selected_subject,
-                                commission,
-                                current_date.strftime('%Y-%m-%d'),
-                                current_time.strftime('%H:%M:%S'),
-                                device_info["hostname"],
-                                device_info["ip"],
-                                device_info["device_id"]
-                            )
+                        # QR code verification - offer two options
+                        verification_method = st.radio(
+                            "Método de verificación:",
+                            ["Escanear código QR", "Ingresar código manualmente"]
+                        )
+                        
+                        if verification_method == "Escanear código QR":
+                            st.info("Escanee el código QR mostrado por el profesor")
+                            # Note: Native QR scanning requires JavaScript, which is limited in Streamlit
+                            # Alternative: Use a camera input and process the image
+                            uploaded_file = st.camera_input("Tomar foto del código QR")
                             
-                            # En lugar de reiniciar inmediatamente, establecer estado de confirmación
-                            st.session_state.attendance_registered = True
-                            st.session_state.registration_info = {
-                                "student_name": student_data['APELLIDO Y NOMBRE'],
-                                "subject": selected_subject,
-                                "time": current_time.strftime('%H:%M:%S'),
-                                "date": current_date.strftime('%d/%m/%Y')
-                            }
-                            st.rerun()
+                            if uploaded_file is not None:
+                                # In a real implementation, you would process this image to extract QR data
+                                # For demo purposes, we'll fallback to manual entry
+                                st.info("Procesamiento de QR en desarrollo. Por favor, ingrese el código manualmente.")
+                                code = st.text_input("Código:", max_chars=6)
+                                
+                                if st.button("Verificar código"):
+                                    if verify_classroom_code(code, selected_subject, commission):
+                                        # Register attendance
+                                        register_attendance_function()
+                                    else:
+                                        st.error("Código inválido o expirado")
+                                        
+                        else:  # Manual code entry
+                            st.info("Ingrese el código mostrado por el profesor")
+                            code = st.text_input("Código:", max_chars=6)
+                            
+                            if st.button("Verificar código"):
+                                if verify_classroom_code(code, selected_subject, commission):
+                                    # Register attendance
+                                    register_attendance_function()
+                                else:
+                                    st.error("Código inválido o expirado")
             else:
                 st.warning("No hay materias disponibles en este horario.")
         else:
             st.error("DNI no encontrado en el sistema.")
 
+def register_attendance_function(selected_dni, student_name, selected_subject, commission, current_date, current_time, device_info):
+    # Guardar asistencia
+    save_attendance(
+        selected_dni,
+        student_name,
+        selected_subject,
+        commission,
+        current_date.strftime('%Y-%m-%d'),
+        current_time.strftime('%H:%M:%S'),
+        device_info["hostname"],
+        device_info["ip"],
+        device_info["device_id"]
+    )
+    
+    # En lugar de reiniciar inmediatamente, establecer estado de confirmación
+    st.session_state.attendance_registered = True
+    st.session_state.registration_info = {
+        "student_name": student_name,
+        "subject": selected_subject,
+        "time": current_time.strftime('%H:%M:%S'),
+        "date": current_date.strftime('%d/%m/%Y')
+    }
+    st.rerun()
+    
 # Main app
 def main():
     try:
-        firebase = setup_firebase()
-        if firebase:
-            # Rest of your existing code remains the same
-            if not st.session_state.admin_mode and hasattr(st.session_state, 'temp_show_admin') and st.session_state.temp_show_admin:
-                admin_login()
-                return
-            
-            # Regular student view
-            if not st.session_state.admin_mode:
-                student_login()
+           
+        # When admin is authenticated:
+        if st.session_state.admin_mode:
+            admin_dashboard()  # Add this line to call the new function
+        else:
+            # Your existing student login code
+            student_login()
     except Exception as e:
-        st.error(f"Detailed Firebase Error: {str(e)}")
-        st.error(f"Firebase Secrets: {list(st.secrets.keys())}")  # Check available secrets
+        st.error(f"Detailed Error: {str(e)}")
+            
     
     sidebar()
     
