@@ -528,8 +528,14 @@ def student_login():
 # Main app
 def main():
     # Inicializar Firebase
-    setup_firebase()
-    
+    # setup_firebase()
+    # Uso
+    try:
+        firebase = setup_firebase()
+        if firebase:
+            st.session_state.firebase = firebase
+    except Exception as e:
+        st.error(f"Error general: {str(e)}")
     
     sidebar()
     
