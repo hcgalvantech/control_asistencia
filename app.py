@@ -4,6 +4,8 @@ import datetime
 import os
 import socket
 import random
+import uuid  # Add this line
+import requests  # Also need this for send_verification_code
 from pathlib import Path
 from utils import validate_time_for_subject, detect_mobile_device, is_attendance_registered, save_attendance, validate_device_for_subject
 from network import check_wifi_connection, is_ip_in_allowed_range, get_local_ip, get_argentina_datetime, get_device_id
@@ -234,6 +236,7 @@ def send_verification_code(phone):
 def verify_code(code):
     try:
         if 'session_info' not in st.session_state:
+            st.error("No hay sesión de verificación activa")
             return False
             
         url = f"https://identitytoolkit.googleapis.com/v1/accounts:verifyPhoneNumber?key={st.secrets['FIREBASE_API_KEY']}"
@@ -312,7 +315,7 @@ def phone_verification(dni, phone):
     
     with col1:
         if st.button("Verificar"):
-            if verify_code(verification_input, dni, phone):
+            if verify_code(verification_input):  # Modified this line
                 st.session_state.phone_verified = True
                 st.success("Teléfono verificado correctamente")
                 # Limpiar la sesión de verificación
