@@ -208,48 +208,48 @@ def setup_firebase():
 def send_verification_code(phone):
     try:
         # Formato internacional para Argentina
-        if not phone:
-            st.error("Número de teléfono no disponible")
-            return False
-            
         formatted_phone = f"+54{phone.lstrip('0')}" if not phone.startswith('+') else phone
         
-        # Usar reCAPTCHA invisible en producción (opcional)
-        recaptcha_token = None  # En producción configurar esto
+        # Obtener token idempotente para esta sesión
+        session_id = str(uuid.uuid4())
         
-        # Enviar código de verificación
-        firebase_auth = st.session_state.firebase.auth()
-        verification_data = firebase_auth.send_verification_code(formatted_phone, recaptcha_token)
+        url = f"https://identitytoolkit.googleapis.com/v1/accounts:sendVerificationCode?key={st.secrets['FIREBASE_API_KEY']}"
+        payload = {
+            "phoneNumber": formatted_phone,
+            "recaptchaToken": "invisible-recaptcha-token",  # Requiere implementación
+        }
         
-        # Guardar ID de sesión para verificación posterior
-        st.session_state.verification_session_id = verification_data['sessionInfo']
-        
-        return True
+        response = requests.post(url, data=json.dumps(payload))
+        if response.status_code == 200:
+            result = response.json()
+            st.session_state.session_info = result.get("sessionInfo")
+            return True
+        else:
+            st.error(f"Error API: {response.text}")
+            return False
     except Exception as e:
-        st.error(f"Error al enviar código de verificación: {str(e)}")
+        st.error(f"Error: {str(e)}")
         return False
-    
-# Función para verificar código
-def verify_code(code, dni, phone):
+
+def verify_code(code):
     try:
-        if 'verification_session_id' not in st.session_state:
-            st.error("No hay sesión de verificación activa")
+        if 'session_info' not in st.session_state:
             return False
             
-        firebase_auth = st.session_state.firebase.auth()
+        url = f"https://identitytoolkit.googleapis.com/v1/accounts:verifyPhoneNumber?key={st.secrets['FIREBASE_API_KEY']}"
+        payload = {
+            "sessionInfo": st.session_state.session_info,
+            "code": code
+        }
         
-        # Verificar el código
-        result = firebase_auth.verify_verification_code(
-            st.session_state.verification_session_id,
-            code
-        )
-        
-        # Registrar verificación exitosa en la base de datos
-        save_verification_code(dni, phone, "firebase_verified", verified=True)
-        
-        return True
+        response = requests.post(url, data=json.dumps(payload))
+        if response.status_code == 200:
+            return True
+        else:
+            st.error(f"Error verificación: {response.text}")
+            return False
     except Exception as e:
-        st.error(f"Error al verificar código: {str(e)}")
+        st.error(f"Error: {str(e)}")
         return False
     
 # Generate verification code for phone
