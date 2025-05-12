@@ -364,7 +364,54 @@ def create_qr_code(data):
     img.save(buffered, format="PNG")
     return buffered.getvalue()
 
-
+# Reemplazar la parte del código que maneja la subida de la imagen QR con esto:
+def process_qr_code(uploaded_file):
+    """Procesa la imagen QR y extrae el código"""
+    try:
+        # Leer la imagen cargada
+        if uploaded_file is None:
+            return None
+            
+        # Convertir el archivo subido a un formato que pyzbar pueda procesar
+        image_bytes = uploaded_file.getvalue()
+        image = Image.open(io.BytesIO(image_bytes))
+        
+        # También probar con OpenCV para mejorar la detección
+        nparr = np.frombuffer(image_bytes, np.uint8)
+        img_cv = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
+        
+        # Intentar decodificar primero con PIL
+        decoded_objects = decode(image)
+        
+        # Si no funciona con PIL, intentar con OpenCV
+        if not decoded_objects:
+            # Aplicar umbral adaptativo para mejorar la calidad
+            img_cv = cv2.adaptiveThreshold(img_cv, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                          cv2.THRESH_BINARY, 11, 2)
+            decoded_objects = decode(Image.fromarray(img_cv))
+        
+        # Verificar si se encontró algún código
+        if decoded_objects:
+            # Extraer el primer código QR encontrado
+            qr_data = decoded_objects[0].data.decode('utf-8')
+            
+            # Si es un código de clase, podría tener formato: "CODIGO|MATERIA|COMISION"
+            try:
+                parts = qr_data.split('|')
+                if len(parts) >= 1:
+                    # Retornar solo el código (primera parte)
+                    return parts[0]
+                else:
+                    return qr_data
+            except:
+                # Si hay algún error en el formato, devolver el dato crudo
+                return qr_data
+        else:
+            return None
+    except Exception as e:
+        st.error(f"Error al procesar el código QR: {str(e)}")
+        return None
+    
 # FIXED: Removed send_verification_code function calls 
 def generate_verification_code(dni, phone):
     # Esta función simplemente registra que el usuario ha sido verificado
@@ -501,22 +548,66 @@ def student_login():
                         
                         if verification_method == "Escanear código QR":
                             st.info("Escanee el código QR mostrado por el profesor")
-                            # Use camera input for QR scanning
-                            uploaded_file = st.camera_input("Tomar foto del código QR")
+                            uploaded_file = st.camera_input("Escanear código QR")
                             
                             if uploaded_file is not None:
-                                st.success("QR detectado! Por favor ingrese el código manualmente para completar")
-                        
-                        # Manual code entry
-                        code = st.text_input("Código de clase:", max_chars=6)
-                        
-                        if st.button("Verificar código"):
-                            if verify_classroom_code(code, selected_subject, commission):
-                                st.session_state.phone_verified = True
-                                st.success("Verificación exitosa")
-                                st.rerun()
-                            else:
-                                st.error("Código inválido o expirado")
+                                # Procesar el código QR
+                                extracted_code = process_qr_code(uploaded_file)
+                                
+                                if extracted_code:
+                                    # Mostrar el código extraído para que el usuario confirme
+                                    st.success(f"Código QR detectado: {extracted_code}")
+                                    
+                                    # Crear una caja de verificación para que el usuario confirme
+                                    confirm = st.checkbox("Confirmar que este es el código correcto", value=True)
+                                    
+                                    # El usuario también puede editar el código si es necesario
+                                    code = st.text_input("Código:", value=extracted_code, max_chars=6, key="qr_code_input")
+                                    
+                                    if st.button("Verificar código", key="verify_qr_code"):
+                                        if verify_classroom_code(code, selected_subject, commission):
+                                            # Register attendance with proper arguments
+                                            device_info = {
+                                                "hostname": socket.gethostname(),
+                                                "ip": get_local_ip(),
+                                                "device_id": device_id
+                                            }
+                                            
+                                            register_attendance_function(
+                                                selected_dni,
+                                                student_data['APELLIDO Y NOMBRE'],
+                                                selected_subject,
+                                                commission,
+                                                current_date,
+                                                current_time,
+                                                device_info
+                                            )
+                                        else:
+                                            st.error("Código inválido o expirado")
+                                else:
+                                    st.warning("No se pudo detectar un código QR válido. Por favor, intente de nuevo o ingrese el código manualmente.")
+                                    code = st.text_input("Código:", max_chars=6, key="manual_qr_code_input")
+                                    
+                                    if st.button("Verificar código", key="verify_manual_qr_code"):
+                                        if verify_classroom_code(code, selected_subject, commission):
+                                            # Register attendance with proper arguments
+                                            device_info = {
+                                                "hostname": socket.gethostname(),
+                                                "ip": get_local_ip(),
+                                                "device_id": device_id
+                                            }
+                                            
+                                            register_attendance_function(
+                                                selected_dni,
+                                                student_data['APELLIDO Y NOMBRE'],
+                                                selected_subject,
+                                                commission,
+                                                current_date,
+                                                current_time,
+                                                device_info
+                                            )
+                                        else:
+                                            st.error("Código inválido o expirado")
                                 
                     else:
                         st.warning("No hay materias disponibles para este estudiante")
