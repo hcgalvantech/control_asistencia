@@ -157,7 +157,6 @@ def validate_network():
         
     return True
 
-# Inicializar Firebase (solo una vez)
 def setup_firebase():
     if 'firebase_initialized' not in st.session_state:
         try:
@@ -176,8 +175,13 @@ def setup_firebase():
             # Para Streamlit Cloud
             else:
                 if not firebase_admin._apps:
-                    # Usar secretos de Streamlit
-                    cred_dict = json.loads(st.secrets["FIREBASE_SERVICE_ACCOUNT"])
+                    # Verificar secretos disponibles
+                    available_secrets = list(st.secrets.keys())
+                    st.write(f"Available secrets: {available_secrets}")
+                    
+                    cred_dict = st.secrets["FIREBASE_SERVICE_ACCOUNT"]
+                    if isinstance(cred_dict, str):
+                        cred_dict = json.loads(cred_dict)
                     cred = credentials.Certificate(cred_dict)
                     firebase_admin.initialize_app(cred)
                 
@@ -185,7 +189,8 @@ def setup_firebase():
                     "apiKey": st.secrets["FIREBASE_API_KEY"],
                     "authDomain": st.secrets["FIREBASE_AUTH_DOMAIN"],
                     "projectId": st.secrets["FIREBASE_PROJECT_ID"],
-                    "storageBucket": st.secrets["FIREBASE_STORAGE_BUCKET"]
+                    "storageBucket": st.secrets["FIREBASE_STORAGE_BUCKET"],
+                    "databaseURL": ""  # Add an empty string if not used
                 }
                 
                 firebase = pyrebase.initialize_app(config)
@@ -195,6 +200,7 @@ def setup_firebase():
             return True
         except Exception as e:
             st.error(f"Error al inicializar Firebase: {str(e)}")
+            st.error(f"Detalles de secretos: {list(st.secrets.keys())}")
             return False
     return True
 
@@ -527,26 +533,22 @@ def student_login():
 
 # Main app
 def main():
-    # Inicializar Firebase
-    # setup_firebase()
-    # Uso
     try:
         firebase = setup_firebase()
         if firebase:
-            st.session_state.firebase = firebase
+            # Rest of your existing code remains the same
+            if not st.session_state.admin_mode and hasattr(st.session_state, 'temp_show_admin') and st.session_state.temp_show_admin:
+                admin_login()
+                return
+            
+            # Regular student view
+            if not st.session_state.admin_mode:
+                student_login()
     except Exception as e:
-        st.error(f"Error general: {str(e)}")
+        st.error(f"Detailed Firebase Error: {str(e)}")
+        st.error(f"Firebase Secrets: {list(st.secrets.keys())}")  # Check available secrets
     
     sidebar()
     
-    # Show admin login if requested
-    if not st.session_state.admin_mode and hasattr(st.session_state, 'temp_show_admin') and st.session_state.temp_show_admin:
-        admin_login()
-        return
-    
-    # Regular student view
-    if not st.session_state.admin_mode:
-        student_login()
-
 if __name__ == "__main__":
     main()
