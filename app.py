@@ -209,16 +209,41 @@ def setup_firebase():
 # Función para enviar código de verificación vía Firebase
 def send_verification_code(phone):
     try:
-        # Formato internacional para Argentina
-        formatted_phone = f"+54{phone.lstrip('0')}" if not phone.startswith('+') else phone
+        # Clean and format the phone number correctly
+        # Remove any non-digit characters
+        clean_phone = ''.join(filter(str.isdigit, phone))
         
-        # Obtener token idempotente para esta sesión
+        # Check if it's already in international format
+        if phone.startswith('+'):
+            formatted_phone = phone
+        else:
+            # For Argentina, ensure it's correctly formatted
+            # Strip leading zeros from area code if present
+            if clean_phone.startswith('0'):
+                clean_phone = clean_phone[1:]
+            
+            # If number starts with 15, adjust accordingly
+            if clean_phone.startswith('15'):
+                clean_phone = clean_phone[2:]
+                
+            # Format as international
+            formatted_phone = f"+54{clean_phone}"
+        
+        # Verify the phone number isn't too long (should be around 13 chars including country code)
+        if len(formatted_phone) > 15:
+            st.error(f"Número de teléfono demasiado largo: {formatted_phone}")
+            return False
+            
+        # Log the formatted number for debugging
+        st.info(f"Enviando código a: {formatted_phone}")
+        
+        # Get idempotent session ID
         session_id = str(uuid.uuid4())
         
         url = f"https://identitytoolkit.googleapis.com/v1/accounts:sendVerificationCode?key={st.secrets['FIREBASE_API_KEY']}"
         payload = {
             "phoneNumber": formatted_phone,
-            "recaptchaToken": "invisible-recaptcha-token",  # Requiere implementación
+            "recaptchaToken": "invisible-recaptcha-token"  # This needs to be handled properly
         }
         
         response = requests.post(url, data=json.dumps(payload))
