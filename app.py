@@ -176,8 +176,8 @@ def setup_firebase():
             else:
                 if not firebase_admin._apps:
                     # Verificar secretos disponibles
-                    available_secrets = list(st.secrets.keys())
-                    st.write(f"Available secrets: {available_secrets}")
+                    # available_secrets = list(st.secrets.keys())
+                    # st.write(f"Available secrets: {available_secrets}")
                     
                     cred_dict = st.secrets["FIREBASE_SERVICE_ACCOUNT"]
                     if isinstance(cred_dict, str):
