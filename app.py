@@ -9,6 +9,12 @@ from utils import validate_time_for_subject, detect_mobile_device, is_attendance
 from network import check_wifi_connection, is_ip_in_allowed_range, get_local_ip, get_argentina_datetime, get_device_id
 from database import load_students, load_attendance, load_schedule, load_admin_config, save_verification_code
 
+# Importaciones para Firebase
+import firebase_admin
+from firebase_admin import credentials, auth
+import pyrebase
+import json
+
 # Detectar si estamos en Streamlit Cloud
 if not os.environ.get('STREAMLIT_SHARING'):
     os.environ['STREAMLIT_SHARING'] = 'true'
@@ -151,36 +157,178 @@ def validate_network():
         
     return True
 
+# Inicializar Firebase (solo una vez)
+def setup_firebase():
+    if 'firebase_initialized' not in st.session_state:
+        try:
+            # Para entorno de desarrollo local
+            if os.path.exists("firebase-key.json"):
+                if not firebase_admin._apps:
+                    cred = credentials.Certificate("firebase-key.json")
+                    firebase_admin.initialize_app(cred)
+                
+                # Cargar configuración
+                with open("firebase-config.json", "r") as f:
+                    config = json.load(f)
+                
+                firebase = pyrebase.initialize_app(config)
+                st.session_state.firebase = firebase
+            # Para Streamlit Cloud
+            else:
+                if not firebase_admin._apps:
+                    # Usar secretos de Streamlit
+                    cred_dict = json.loads(st.secrets["FIREBASE_SERVICE_ACCOUNT"])
+                    cred = credentials.Certificate(cred_dict)
+                    firebase_admin.initialize_app(cred)
+                
+                config = {
+                    "apiKey": st.secrets["FIREBASE_API_KEY"],
+                    "authDomain": st.secrets["FIREBASE_AUTH_DOMAIN"],
+                    "projectId": st.secrets["FIREBASE_PROJECT_ID"],
+                    "storageBucket": st.secrets["FIREBASE_STORAGE_BUCKET"]
+                }
+                
+                firebase = pyrebase.initialize_app(config)
+                st.session_state.firebase = firebase
+            
+            st.session_state.firebase_initialized = True
+            return True
+        except Exception as e:
+            st.error(f"Error al inicializar Firebase: {str(e)}")
+            return False
+    return True
+
+# Función para enviar código de verificación vía Firebase
+def send_verification_code(phone):
+    try:
+        # Formato internacional para Argentina
+        if not phone:
+            st.error("Número de teléfono no disponible")
+            return False
+            
+        formatted_phone = f"+54{phone.lstrip('0')}" if not phone.startswith('+') else phone
+        
+        # Usar reCAPTCHA invisible en producción (opcional)
+        recaptcha_token = None  # En producción configurar esto
+        
+        # Enviar código de verificación
+        firebase_auth = st.session_state.firebase.auth()
+        verification_data = firebase_auth.send_verification_code(formatted_phone, recaptcha_token)
+        
+        # Guardar ID de sesión para verificación posterior
+        st.session_state.verification_session_id = verification_data['sessionInfo']
+        
+        return True
+    except Exception as e:
+        st.error(f"Error al enviar código de verificación: {str(e)}")
+        return False
+    
+# Función para verificar código
+def verify_code(code, dni, phone):
+    try:
+        if 'verification_session_id' not in st.session_state:
+            st.error("No hay sesión de verificación activa")
+            return False
+            
+        firebase_auth = st.session_state.firebase.auth()
+        
+        # Verificar el código
+        result = firebase_auth.verify_verification_code(
+            st.session_state.verification_session_id,
+            code
+        )
+        
+        # Registrar verificación exitosa en la base de datos
+        save_verification_code(dni, phone, "firebase_verified", verified=True)
+        
+        return True
+    except Exception as e:
+        st.error(f"Error al verificar código: {str(e)}")
+        return False
+    
 # Generate verification code for phone
-def generate_verification_code(dni, phone):
+# def generate_verification_code(dni, phone):
     # Generate a 6-digit code
-    code = random.randint(100000, 999999)
-    st.session_state.verification_code = code
+#    code = random.randint(100000, 999999)
+#    st.session_state.verification_code = code
     
     # In a real production system, send the code via SMS using a service like Twilio
     # For this demo, we'll just display the code
-    save_verification_code(dni, phone, code)
-    return code
+#    save_verification_code(dni, phone, code)
+#    return code
+
+def generate_verification_code(dni, phone):
+    # Esta función ahora solo registra que iniciamos un proceso de verificación
+    save_verification_code(dni, phone, "firebase_initiated")
+    
+    # Iniciar proceso de verificación con Firebase
+    if send_verification_code(phone):
+        return True
+    return False
 
 # Phone verification step
-def phone_verification(dni, phone):
-    st.subheader("Verificación de Teléfono")
-    st.info(f"Un código de verificación ha sido enviado al número: {phone}")
+#def phone_verification(dni, phone):
+#    st.subheader("Verificación de Teléfono")
+#    st.info(f"Un código de verificación ha sido enviado al número: {phone}")
     
     # In a real system, this would be sent via SMS
     # For demo purposes, we'll show the code on screen
-    st.info(f"Para propósitos de demostración, el código es: {st.session_state.verification_code}")
+#    st.info(f"Para propósitos de demostración, el código es: {st.session_state.verification_code}")
     
-    verification_input = st.text_input("Ingrese el código de verificación:", max_chars=6)
+#    verification_input = st.text_input("Ingrese el código de verificación:", max_chars=6)
     
-    if st.button("Verificar"):
-        if verification_input == str(st.session_state.verification_code):
-            st.session_state.phone_verified = True
-            st.success("Teléfono verificado correctamente")
-            st.rerun()
-        else:
-            st.error("Código incorrecto. Intente nuevamente.")
+#    if st.button("Verificar"):
+#        if verification_input == str(st.session_state.verification_code):
+#            st.session_state.phone_verified = True
+#            st.success("Teléfono verificado correctamente")
+#            st.rerun()
+#        else:
+#            st.error("Código incorrecto. Intente nuevamente.")
 
+# Modificación de la función de verificación de teléfono
+def phone_verification(dni, phone):
+    st.subheader("Verificación de Teléfono")
+    
+    # Si no hay sesión de verificación, iniciar el proceso
+    if 'verification_session_id' not in st.session_state:
+        if send_verification_code(phone):
+            st.info(f"Se ha enviado un código por SMS al número: {phone}")
+        else:
+            st.error("No se pudo enviar el código de verificación")
+            return
+    else:
+        st.info(f"Ingrese el código recibido por SMS en el número: {phone}")
+    
+    # Entrada del código
+    verification_input = st.text_input("Código de verificación:", max_chars=6)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("Verificar"):
+            if verify_code(verification_input, dni, phone):
+                st.session_state.phone_verified = True
+                st.success("Teléfono verificado correctamente")
+                # Limpiar la sesión de verificación
+                if 'verification_session_id' in st.session_state:
+                    del st.session_state.verification_session_id
+                st.rerun()
+            else:
+                st.error("Código incorrecto. Intente nuevamente.")
+    
+    with col2:
+        if st.button("Reenviar código"):
+            # Limpiar sesión anterior
+            if 'verification_session_id' in st.session_state:
+                del st.session_state.verification_session_id
+            
+            # Enviar nuevo código
+            if send_verification_code(phone):
+                st.info("Nuevo código enviado")
+                st.rerun()
+            else:
+                st.error("No se pudo enviar un nuevo código")
+                
 # Student authentication
 def student_login():
     st.title("Sistema de Registro de Asistencia")
@@ -379,6 +527,10 @@ def student_login():
 
 # Main app
 def main():
+    # Inicializar Firebase
+    setup_firebase()
+    
+    
     sidebar()
     
     # Show admin login if requested
