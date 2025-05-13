@@ -151,9 +151,9 @@ def get_unique_subjects():
 def get_commissions_by_subject(subject):
     """Get commissions available for a specific subject"""
     supabase = get_supabase_client()
-    response = supabase.table('students').select('COMISION').eq('MATERIA', subject).execute()
+    response = supabase.table('students').select('comision').eq('materia', subject).execute()
     df = pd.DataFrame(response.data)
-    return sorted(df['COMISION'].unique().tolist())
+    return sorted(df['comision'].unique().tolist())
 
 def get_attendance_report(date=None, subject=None, commission=None):
     """Generate an attendance report with filters"""
