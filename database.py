@@ -144,9 +144,9 @@ def get_attendance_by_subject_date(subject, date):
 def get_unique_subjects():
     """Get list of unique subjects from student data"""
     supabase = get_supabase_client()
-    response = supabase.table('students').select('MATERIA').execute()
+    response = supabase.table('students').select('materia').execute()
     df = pd.DataFrame(response.data)
-    return sorted(df['MATERIA'].unique().tolist())
+    return sorted(df['materia'].unique().tolist())
 
 def get_commissions_by_subject(subject):
     """Get commissions available for a specific subject"""
