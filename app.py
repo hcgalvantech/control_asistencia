@@ -572,11 +572,11 @@ def student_login():
         if student_data:
             student_data = student_data[0]
             st.session_state.student_data = student_data
-            st.info(f"Estudiante: {student_data['APELLIDO Y NOMBRE']}")
-            st.info(f"Tecnicatura: {student_data['TECNICATURA']}")
+            st.info(f"Estudiante: {student_data['apellido_nombre']}")
+            st.info(f"Tecnicatura: {student_data['tecnicatura']}")
             
             # Verificación del teléfono
-            student_phone = str(student_data.get('TELEFONO', ''))
+            student_phone = str(student_data.get('telefono', ''))
             
             # FIXED: Simplified verification process
             # Si el teléfono no está verificado, simplificar proceso
@@ -590,13 +590,13 @@ def student_login():
                     st.subheader("Verificación de Presencia")
                     
                     # Get student subjects
-                    student_subjects = students_df[students_df["DNI"].astype(str) == selected_dni]["MATERIA"].unique().tolist()
+                    student_subjects = students_df[students_df["dni"].astype(str) == selected_dni]["materia"].unique().tolist()
                     
                     # Show available subjects
                     if student_subjects:
                         selected_subject = st.selectbox("Seleccione materia:", student_subjects)
-                        commission = students_df[(students_df["DNI"].astype(str) == selected_dni) & 
-                                            (students_df["MATERIA"] == selected_subject)]["COMISION"].iloc[0]
+                        commission = students_df[(students_df["dni"].astype(str) == selected_dni) & 
+                                            (students_df["materia"] == selected_subject)]["comision"].iloc[0]
                         
                         verification_method = st.radio(
                             "Método de verificación:",
@@ -632,7 +632,7 @@ def student_login():
                                             
                                             register_attendance_function(
                                                 selected_dni,
-                                                student_data['APELLIDO Y NOMBRE'],
+                                                student_data['apellido_nombre'],
                                                 selected_subject,
                                                 commission,
                                                 current_date,
@@ -656,7 +656,7 @@ def student_login():
                                             
                                             register_attendance_function(
                                                 selected_dni,
-                                                student_data['APELLIDO Y NOMBRE'],
+                                                student_data['apellido_nombre'],
                                                 selected_subject,
                                                 commission,
                                                 current_date,
@@ -674,7 +674,7 @@ def student_login():
             # Continue with attendance process after verification
             
             # Get available subjects for this student
-            student_subjects = students_df[students_df["DNI"].astype(str) == selected_dni]["MATERIA"].unique().tolist()
+            student_subjects = students_df[students_df["dni"].astype(str) == selected_dni]["materia"].unique().tolist()
             
             # Check which subjects are available at current time
             schedule_df = load_schedule()
@@ -682,8 +682,8 @@ def student_login():
 
             for subject in student_subjects:
                 # Obtener la comisión del estudiante para esta materia
-                student_commission = students_df[(students_df["DNI"].astype(str) == selected_dni) & 
-                                                (students_df["MATERIA"] == subject)]["COMISION"].iloc[0]
+                student_commission = students_df[(students_df["dni"].astype(str) == selected_dni) & 
+                                                (students_df["materia"] == subject)]["comision"].iloc[0]
                 
                 # Filtrar horarios por materia y comisión
                 subject_schedule = schedule_df[(schedule_df["MATERIA"] == subject) & 
@@ -698,8 +698,8 @@ def student_login():
 
             if available_subjects:
                 selected_subject = st.selectbox("Materia disponible:", available_subjects)
-                commission = students_df[(students_df["DNI"].astype(str) == selected_dni) & 
-                                    (students_df["MATERIA"] == selected_subject)]["COMISION"].iloc[0]
+                commission = students_df[(students_df["dni"].astype(str) == selected_dni) & 
+                                    (students_df["materia"] == selected_subject)]["comision"].iloc[0]
                 
                 # Check if attendance already registered
                 attendance_df = load_attendance()
@@ -737,7 +737,7 @@ def student_login():
                                         
                                         register_attendance_function(
                                             selected_dni,
-                                            student_data['APELLIDO Y NOMBRE'],
+                                            student_data['apellido_nombre'],
                                             selected_subject,
                                             commission,
                                             current_date,
@@ -762,7 +762,7 @@ def student_login():
                                     
                                     register_attendance_function(
                                         selected_dni,
-                                        student_data['APELLIDO Y NOMBRE'],
+                                        student_data['apellido_nombre'],
                                         selected_subject,
                                         commission,
                                         current_date,
