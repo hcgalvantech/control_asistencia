@@ -562,12 +562,12 @@ def student_login():
         st.warning("⚠️ Este sistema está diseñado para utilizarse desde un dispositivo móvil.")
     
     # Lista de DNIs para selección
-    dni_list = [""] + sorted(students_df["DNI"].astype(str).unique().tolist())
+    dni_list = [""] + sorted(students_df["dni"].astype(str).unique().tolist())
     selected_dni = st.selectbox("Seleccione su DNI:", dni_list)
     
     if selected_dni:
         # Obtener datos del estudiante
-        student_data = students_df[students_df["DNI"].astype(str) == selected_dni].to_dict('records')
+        student_data = students_df[students_df["dni"].astype(str) == selected_dni].to_dict('records')
         
         if student_data:
             student_data = student_data[0]
