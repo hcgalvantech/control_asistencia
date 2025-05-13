@@ -1,166 +1,180 @@
-import pandas as pd
+import datetime
 import json
 import os
-import datetime
+import pandas as pd
+import streamlit as st
+
+# Get Supabase client - reuse from app.py or initialize here
+def get_supabase_client():
+    try:
+        # Try to get from Streamlit secrets first
+        if 'SUPABASE_URL' in st.secrets:
+            supabase_url = st.secrets["SUPABASE_URL"]
+            supabase_key = st.secrets["SUPABASE_KEY"]
+        else:
+            # Fall back to environment variables
+            from dotenv import load_dotenv
+            load_dotenv()
+            supabase_url = os.environ.get("SUPABASE_URL")
+            supabase_key = os.environ.get("SUPABASE_KEY")
+        
+        from supabase import create_client
+        return create_client(supabase_url, supabase_key)
+    except Exception as e:
+        st.error(f"Error connecting to Supabase: {str(e)}")
+        return None
 
 def load_students():
-    """Load student data from CSV"""
-    if os.path.exists('data/students.csv'):
-        return pd.read_csv('data/students.csv')
-    return pd.DataFrame()
-
-def load_attendance():
-    """Load attendance records from CSV"""
-    if os.path.exists('data/attendance.csv'):
-        return pd.read_csv('data/attendance.csv')
-    return pd.DataFrame(columns=['DNI', 'APELLIDO Y NOMBRE', 'MATERIA', 'COMISION', 
-                                'FECHA', 'HORA', 'DISPOSITIVO', 'IP'])
-
-def load_schedule():
-    """Load class schedule from CSV"""
-    if os.path.exists('data/schedule.csv'):
-        return pd.read_csv('data/schedule.csv')
-    return pd.DataFrame()
-
-def load_verification_codes():
-    """Load verification codes from CSV"""
-    if os.path.exists('data/verification_codes.csv'):
-        return pd.read_csv('data/verification_codes.csv')
-    return pd.DataFrame(columns=['DNI', 'PHONE', 'CODE', 'TIMESTAMP', 'VERIFIED'])
-
-def load_device_usage():
-    """Load device usage tracking from CSV"""
-    if os.path.exists('data/device_usage.csv'):
-        return pd.read_csv('data/device_usage.csv')
-    return pd.DataFrame(columns=['DEVICE_ID', 'DNI', 'MATERIA', 'FECHA', 'TIMESTAMP'])
-
-def load_admin_config():
-    """Load admin configuration from JSON"""
-    if os.path.exists('data/admin_config.json'):
-        with open('data/admin_config.json', 'r') as f:
-            return json.load(f)
+    """Load student data from Supabase"""
+    supabase = get_supabase_client()
+    response = supabase.table('students').select('*').execute()
+    df = pd.DataFrame(response.data)
     
-    # Default config
-    default_config = {
-        "allowed_ip_ranges": ["192.168.1.0/24"],
-        "admin_username": "admin",
-        "admin_password": "admin123"
+    # Rename columns to match code expectations
+    column_mapping = {
+        'dni': 'DNI',
+        'apellido_nombre': 'APELLIDO Y NOMBRE',
+        'telefono': 'TELEFONO',
+        'correo': 'CORREO',
+        'tecnicatura': 'TECNICATURA',
+        'materia': 'MATERIA',
+        'comision': 'COMISION'
     }
     
-    # Save default config
-    with open('data/admin_config.json', 'w') as f:
-        json.dump(default_config, f)
+    return df.rename(columns=column_mapping)
+
+def load_attendance():
+    """Load attendance records from Supabase"""
+    supabase = get_supabase_client()
+    response = supabase.table('attendance').select('*').execute()
+    return pd.DataFrame(response.data)
+
+def load_schedule():
+    """Load class schedule from Supabase"""
+    supabase = get_supabase_client()
+    response = supabase.table('schedule').select('*').execute()
+    return pd.DataFrame(response.data)
+
+def load_admin_config():
+    """Load admin configuration from Supabase"""
+    supabase = get_supabase_client()
+    response = supabase.table('admin_config').select('*').execute()
     
-    return default_config
+    if not response.data:
+        # Default config
+        default_config = {
+            "allowed_ip_ranges": ["192.168.1.0/24"],
+            "admin_username": "admin",
+            "admin_password": "admin123"
+        }
+        # Save default config
+        supabase.table('admin_config').insert(default_config).execute()
+        return default_config
+    
+    return response.data[0]
 
 def save_admin_config(config):
-    """Save admin configuration to JSON"""
-    with open('data/admin_config.json', 'w') as f:
-        json.dump(config, f)
+    """Save admin configuration to Supabase"""
+    supabase = get_supabase_client()
+    # Delete existing config and insert new one
+    supabase.table('admin_config').delete().neq('id', 0).execute()
+    supabase.table('admin_config').insert(config).execute()
     return True
 
 def save_verification_code(dni, phone, code):
-    """Save verification code to CSV"""
+    """Save verification code to Supabase"""
     from network import get_argentina_datetime
     
-    verification_path = 'data/verification_codes.csv'
-    if os.path.exists(verification_path):
-        verification_df = pd.read_csv(verification_path)
-    else:
-        verification_df = pd.DataFrame(columns=['DNI', 'PHONE', 'CODE', 'TIMESTAMP', 'VERIFIED'])
-    
-    # Obtener hora de Argentina
+    supabase = get_supabase_client()
     argentina_now, _, _ = get_argentina_datetime()
-    argentina_timestamp = argentina_now.strftime('%Y-%m-%d %H:%M:%S')
+    argentina_timestamp = argentina_now.isoformat()
     
     # Check if there's already a code for this user
-    existing = verification_df[verification_df['DNI'].astype(str) == str(dni)]
-    if not existing.empty:
+    response = supabase.table('verification_codes').select('*').eq('DNI', str(dni)).execute()
+    
+    if response.data:
         # Update existing code
-        verification_df.loc[verification_df['DNI'].astype(str) == str(dni), 'CODE'] = code
-        verification_df.loc[verification_df['DNI'].astype(str) == str(dni), 'TIMESTAMP'] = argentina_timestamp
-        verification_df.loc[verification_df['DNI'].astype(str) == str(dni), 'VERIFIED'] = False
+        supabase.table('verification_codes').update({
+            'CODE': code,
+            'TIMESTAMP': argentina_timestamp,
+            'VERIFIED': False
+        }).eq('DNI', str(dni)).execute()
     else:
         # Add new code
         new_record = {
-            'DNI': dni,
+            'DNI': str(dni),
             'PHONE': phone,
             'CODE': code,
             'TIMESTAMP': argentina_timestamp,
             'VERIFIED': False
         }
-        verification_df = pd.concat([verification_df, pd.DataFrame([new_record])], ignore_index=True)
+        supabase.table('verification_codes').insert(new_record).execute()
     
-    verification_df.to_csv(verification_path, index=False)
     return True
 
 def mark_verification_code_verified(dni):
     """Mark a verification code as verified"""
-    verification_path = 'data/verification_codes.csv'
-    
-    if os.path.exists(verification_path):
-        verification_df = pd.read_csv(verification_path)
-        verification_df.loc[verification_df['DNI'].astype(str) == str(dni), 'VERIFIED'] = True
-        verification_df.to_csv(verification_path, index=False)
-    
+    supabase = get_supabase_client()
+    supabase.table('verification_codes').update({'VERIFIED': True}).eq('DNI', str(dni)).execute()
     return True
 
 def get_students_by_subject(subject, commission=None):
     """Get students enrolled in a specific subject and commission"""
-    students_df = load_students()
+    supabase = get_supabase_client()
     
     if commission:
-        filtered_df = students_df[(students_df['MATERIA'] == subject) & 
-                                 (students_df['COMISION'] == commission)]
+        response = supabase.table('students').select('*').eq('MATERIA', subject).eq('COMISION', commission).execute()
     else:
-        filtered_df = students_df[students_df['MATERIA'] == subject]
+        response = supabase.table('students').select('*').eq('MATERIA', subject).execute()
     
-    return filtered_df
+    return pd.DataFrame(response.data)
 
 def get_attendance_by_date(date):
     """Get attendance records for a specific date"""
-    attendance_df = load_attendance()
-    return attendance_df[attendance_df['FECHA'] == date]
+    supabase = get_supabase_client()
+    response = supabase.table('attendance').select('*').eq('FECHA', date).execute()
+    return pd.DataFrame(response.data)
 
 def get_attendance_by_subject_date(subject, date):
     """Get attendance records for a specific subject and date"""
-    attendance_df = load_attendance()
-    return attendance_df[(attendance_df['MATERIA'] == subject) & 
-                        (attendance_df['FECHA'] == date)]
+    supabase = get_supabase_client()
+    response = supabase.table('attendance').select('*').eq('MATERIA', subject).eq('FECHA', date).execute()
+    return pd.DataFrame(response.data)
 
 def get_unique_subjects():
     """Get list of unique subjects from student data"""
-    students_df = load_students()
-    return sorted(students_df['MATERIA'].unique().tolist())
+    supabase = get_supabase_client()
+    response = supabase.table('students').select('MATERIA').execute()
+    df = pd.DataFrame(response.data)
+    return sorted(df['MATERIA'].unique().tolist())
 
 def get_commissions_by_subject(subject):
     """Get commissions available for a specific subject"""
-    students_df = load_students()
-    commissions = students_df[students_df['MATERIA'] == subject]['COMISION'].unique()
-    return sorted(commissions.tolist())
+    supabase = get_supabase_client()
+    response = supabase.table('students').select('COMISION').eq('MATERIA', subject).execute()
+    df = pd.DataFrame(response.data)
+    return sorted(df['COMISION'].unique().tolist())
 
 def get_attendance_report(date=None, subject=None, commission=None):
-    """
-    Generate an attendance report with filters
-    Returns a DataFrame with the filtered attendance data
-    """
-    attendance_df = load_attendance()
+    """Generate an attendance report with filters"""
+    supabase = get_supabase_client()
+    query = supabase.table('attendance').select('*')
     
-    # Apply filters
     if date:
-        attendance_df = attendance_df[attendance_df['FECHA'] == date]
+        query = query.eq('FECHA', date)
     
     if subject:
-        attendance_df = attendance_df[attendance_df['MATERIA'] == subject]
+        query = query.eq('MATERIA', subject)
     
     if commission:
-        attendance_df = attendance_df[attendance_df['COMISION'] == commission]
+        query = query.eq('COMISION', commission)
     
-    return attendance_df
+    response = query.execute()
+    return pd.DataFrame(response.data)
 
 def get_schedule_by_date(date):
     """Get schedule for a specific date"""
-    schedule_df = load_schedule()
+    supabase = get_supabase_client()
     
     # Handle date format conversion if needed
     if isinstance(date, datetime.date):
@@ -168,6 +182,5 @@ def get_schedule_by_date(date):
     else:
         date_str = date
     
-    # Filter schedule for the specified date
-    filtered_df = schedule_df[schedule_df['FECHA'] == date_str]
-    return filtered_df
+    response = supabase.table('schedule').select('*').eq('FECHA', date_str).execute()
+    return pd.DataFrame(response.data)

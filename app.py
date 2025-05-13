@@ -56,7 +56,16 @@ if 'device_id' not in st.session_state:
 
 
 # Cargar variables de entorno
-load_dotenv()
+# Hybrid approach for both local and cloud
+if 'SUPABASE_URL' in st.secrets:
+    # We're in Streamlit Cloud
+    supabase_url = st.secrets["SUPABASE_URL"]
+    supabase_key = st.secrets["SUPABASE_KEY"]
+else:
+    # We're running locally
+    load_dotenv()
+    supabase_url = os.environ.get("SUPABASE_URL")
+    supabase_key = os.environ.get("SUPABASE_KEY")
 
 
 # Configuración de Supabase (Usar variables de entorno para seguridad)
@@ -74,6 +83,12 @@ def load_attendance():
     return pd.DataFrame(response.data)
 
 def save_attendance(dni, name, subject, commission, date, time, device, ip, device_id):
+    # Ensure date is in ISO format for Supabase date type
+    if isinstance(date, str) and '/' in date:
+        # Convert dd/mm/yyyy to ISO format
+        date_parts = date.split('/')
+        date = f"{date_parts[2]}-{date_parts[1]}-{date_parts[0]}"
+    
     data = {
         'DNI': dni,
         'APELLIDO Y NOMBRE': name,
@@ -124,6 +139,10 @@ def verify_classroom_code(code, subject, commission):
     return len(response.data) > 0
 
 def is_attendance_registered(dni, subject, date):
+    # Format date if needed
+    if isinstance(date, datetime.date):
+        date = date.isoformat()
+        
     response = supabase.table('attendance')\
         .select('*')\
         .eq('DNI', dni)\
