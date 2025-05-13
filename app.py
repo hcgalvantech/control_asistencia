@@ -16,7 +16,9 @@ import cv2
 from utils import validate_time_for_subject, detect_mobile_device, is_attendance_registered, save_attendance, validate_device_for_subject
 from network import check_wifi_connection, is_ip_in_allowed_range, get_local_ip, get_argentina_datetime, get_device_id
 from database import load_students, load_attendance, load_schedule, load_admin_config, save_verification_code
-
+import os
+from supabase import create_client, Client
+from dotenv import load_dotenv
 
 # Detectar si estamos en Streamlit Cloud
 if not os.environ.get('STREAMLIT_SHARING'):
@@ -52,44 +54,86 @@ if 'device_id' not in st.session_state:
     st.session_state.device_id = get_device_id()
     
 
-# Create data directory and files if they don't exist
-if not os.path.exists('data'):
-    os.makedirs('data')
 
-# Copy initial data from attached assets
-assets_path = Path('attached_assets')
-if assets_path.exists() and (assets_path / 'alumnosPorMateria-030525_reducido.csv').exists():
-    students_df = pd.read_csv(assets_path / 'alumnosPorMateria-030525_reducido.csv', skiprows=0)
-    if not os.path.exists('data/students.csv'):
-        students_df.to_csv('data/students.csv', index=False)
+# Cargar variables de entorno
+load_dotenv()
 
-# Initialize other data files if they don't exist
-if not os.path.exists('data/attendance.csv'):
-    pd.DataFrame(columns=['DNI', 'APELLIDO Y NOMBRE', 'MATERIA', 'COMISION', 
-                         'FECHA', 'HORA', 'DISPOSITIVO', 'IP']).to_csv('data/attendance.csv', index=False)
 
-if not os.path.exists('data/schedule.csv'):
-    # Generate a schedule file based on the student data
-    students_df = pd.read_csv('data/students.csv')
-    schedule_data = students_df[['MATERIA', 'COMISION', 'INICIO', 'FINAL']].drop_duplicates()
-    # Ensure we have a FECHA column
-    if 'FECHA' not in schedule_data.columns:
-        # Add today's date as default
-        schedule_data['FECHA'] = datetime.datetime.now().strftime('%d/%m/%Y')
-    schedule_data.to_csv('data/schedule.csv', index=False)
+# Configuración de Supabase (Usar variables de entorno para seguridad)
+supabase_url = os.environ.get("SUPABASE_URL")
+supabase_key = os.environ.get("SUPABASE_KEY")
+supabase: Client = create_client(supabase_url, supabase_key)
 
-# Initialize verification codes file
-if not os.path.exists('data/verification_codes.csv'):
-    pd.DataFrame(columns=['DNI', 'PHONE', 'CODE', 'TIMESTAMP', 'VERIFIED']).to_csv('data/verification_codes.csv', index=False)
+# Funciones adaptadas para usar Supabase
+def load_students():
+    response = supabase.table('students').select('*').execute()
+    return pd.DataFrame(response.data)
 
-# Initialize device usage tracking
-if not os.path.exists('data/device_usage.csv'):
-    pd.DataFrame(columns=['DEVICE_ID', 'DNI', 'MATERIA', 'FECHA', 'TIMESTAMP']).to_csv('data/device_usage.csv', index=False)
+def load_attendance():
+    response = supabase.table('attendance').select('*').execute()
+    return pd.DataFrame(response.data)
 
-# In your initialization section
-if not os.path.exists('data/classroom_codes.csv'):
-    pd.DataFrame(columns=['CODE', 'SUBJECT', 'COMMISSION', 'EXPIRY_TIME']).to_csv('data/classroom_codes.csv', index=False)
+def save_attendance(dni, name, subject, commission, date, time, device, ip, device_id):
+    data = {
+        'DNI': dni,
+        'APELLIDO Y NOMBRE': name,
+        'MATERIA': subject,
+        'COMISION': commission,
+        'FECHA': date,
+        'HORA': time,
+        'DISPOSITIVO': device,
+        'IP': ip,
+        'DEVICE_ID': device_id
+    }
+    supabase.table('attendance').insert(data).execute()
+
+    # También guardar uso del dispositivo
+    device_data = {
+        'DEVICE_ID': device_id,
+        'DNI': dni,
+        'MATERIA': subject,
+        'FECHA': date,
+        'TIMESTAMP': datetime.datetime.now().isoformat()
+    }
+    supabase.table('device_usage').insert(device_data).execute()
+
+def save_classroom_code(code, subject, commission, expiry_time):
+    # Primero eliminar códigos expirados
+    now = datetime.datetime.now().isoformat()
+    supabase.table('classroom_codes').delete().lt('EXPIRY_TIME', now).execute()
     
+    # Luego insertar el nuevo código
+    data = {
+        'CODE': code,
+        'SUBJECT': subject,
+        'COMMISSION': commission,
+        'EXPIRY_TIME': expiry_time
+    }
+    supabase.table('classroom_codes').insert(data).execute()
+     
+def verify_classroom_code(code, subject, commission):
+    now = datetime.datetime.now().isoformat()
+    response = supabase.table('classroom_codes')\
+        .select('*')\
+        .eq('CODE', code)\
+        .eq('SUBJECT', subject)\
+        .eq('COMMISSION', commission)\
+        .gt('EXPIRY_TIME', now)\
+        .execute()
+    
+    return len(response.data) > 0
+
+def is_attendance_registered(dni, subject, date):
+    response = supabase.table('attendance')\
+        .select('*')\
+        .eq('DNI', dni)\
+        .eq('MATERIA', subject)\
+        .eq('FECHA', date)\
+        .execute()
+    
+    return len(response.data) > 0
+    
+   
 # Initialize admin config
 if not os.path.exists('data/admin_config.json'):
     import json
@@ -315,41 +359,30 @@ def generate_classroom_code():
     return ''.join(random.choice(chars) for _ in range(6))
 
 def save_classroom_code(code, subject, commission, expiry_time):
-    """Save active classroom code to database"""
-    codes_df = pd.read_csv('data/classroom_codes.csv') if os.path.exists('data/classroom_codes.csv') else pd.DataFrame(columns=['CODE', 'SUBJECT', 'COMMISSION', 'EXPIRY_TIME'])
+    # First delete expired codes
+    now = datetime.datetime.now().isoformat()
+    supabase.table('classroom_codes').delete().lt('EXPIRY_TIME', now).execute()
     
-    # Remove expired codes
-    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    codes_df = codes_df[codes_df['EXPIRY_TIME'] > now]
-    
-    # Add new code
-    new_code = pd.DataFrame({
-        'CODE': [code],
-        'SUBJECT': [subject],
-        'COMMISSION': [commission],
-        'EXPIRY_TIME': [expiry_time]
-    })
-    
-    codes_df = pd.concat([codes_df, new_code], ignore_index=True)
-    codes_df.to_csv('data/classroom_codes.csv', index=False)
-
+    # Then insert the new code
+    data = {
+        'CODE': code,
+        'SUBJECT': subject,
+        'COMMISSION': commission,
+        'EXPIRY_TIME': expiry_time
+    }
+    supabase.table('classroom_codes').insert(data).execute()
+     
 def verify_classroom_code(code, subject, commission):
-    """Verify if the code is valid for the subject and commission"""
-    if not os.path.exists('data/classroom_codes.csv'):
-        return False
-        
-    codes_df = pd.read_csv('data/classroom_codes.csv')
+    now = datetime.datetime.now().isoformat()
+    response = supabase.table('classroom_codes')\
+        .select('*')\
+        .eq('CODE', code)\
+        .eq('SUBJECT', subject)\
+        .eq('COMMISSION', commission)\
+        .gt('EXPIRY_TIME', now)\
+        .execute()
     
-    # Remove expired codes
-    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    codes_df = codes_df[codes_df['EXPIRY_TIME'] > now]
-    
-    # Check if code exists for subject and commission
-    valid = not codes_df[(codes_df['CODE'] == code) & 
-                      (codes_df['SUBJECT'] == subject) & 
-                      (codes_df['COMMISSION'] == commission)].empty
-    
-    return valid
+    return len(response.data) > 0
 
 def create_qr_code(data):
     """Generate QR code image"""

@@ -14,3 +14,5 @@ pillow==11.2.1
 numpy>=1.24.0
 opencv-python-headless
 pyzbar
+supabase
+python-dotenv
