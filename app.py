@@ -154,14 +154,8 @@ def is_attendance_registered(dni, subject, date):
     
    
 # Initialize admin config
-if not os.path.exists('data/admin_config.json'):
-    import json
-    with open('data/admin_config.json', 'w') as f:
-        json.dump({
-            "allowed_ip_ranges": ["192.168.1.0/24"],
-            "admin_username": "admin",
-            "admin_password": "admin123"
-        }, f)
+# Admin config is now managed in Supabase
+# Initialize it when loading if needed (handled by load_admin_config function)
 
 # Sidebar for navigation
 def sidebar():
@@ -186,6 +180,31 @@ def sidebar():
                 st.session_state.phone_verified = False
                 st.rerun()
 
+# Add these functions to handle admin config in Supabase
+def load_admin_config():
+    response = supabase.table('admin_config').select('*').execute()
+    if response.data:
+        return response.data[0]
+    else:
+        # Create default config if none exists
+        default_config = {
+            "allowed_ip_ranges": ["192.168.1.0/24"],
+            "admin_username": "admin",
+            "admin_password": "admin123"
+        }
+        supabase.table('admin_config').insert(default_config).execute()
+        return default_config
+
+def update_admin_config(config_data):
+    # Get the id of the existing config
+    response = supabase.table('admin_config').select('id').execute()
+    if response.data:
+        config_id = response.data[0]['id']
+        supabase.table('admin_config').update(config_data).eq('id', config_id).execute()
+    else:
+        # Create if doesn't exist
+        supabase.table('admin_config').insert(config_data).execute()
+        
 # Admin login form
 def admin_login():
     st.subheader("Acceso Administrador")
@@ -320,15 +339,13 @@ def admin_dashboard():
         
         if st.button("Actualizar Credenciales"):
             if new_password == confirm_password:
-                admin_config["admin_username"] = new_username
+                updated_config = admin_config.copy()
+                updated_config["admin_username"] = new_username
                 if new_password:  # Solo actualizar contraseña si se ha introducido una nueva
-                    admin_config["admin_password"] = new_password
+                    updated_config["admin_password"] = new_password
                 
-                # Guardar configuración
-                with open('data/admin_config.json', 'w') as f:
-                    import json
-                    json.dump(admin_config, f)
-                
+                # Guardar configuración en Supabase
+                update_admin_config(updated_config)
                 st.success("Credenciales actualizadas correctamente")
             else:
                 st.error("Las contraseñas no coinciden")
@@ -342,13 +359,11 @@ def admin_dashboard():
         if st.button("Actualizar Configuración de Red"):
             # Validar formato de IPs
             ip_list = [ip.strip() for ip in new_ip_ranges.split(",")]
-            admin_config["allowed_ip_ranges"] = ip_list
+            updated_config = admin_config.copy()
+            updated_config["allowed_ip_ranges"] = ip_list
             
-            # Guardar configuración
-            with open('data/admin_config.json', 'w') as f:
-                import json
-                json.dump(admin_config, f)
-            
+            # Guardar configuración en Supabase
+            update_admin_config(updated_config)
             st.success("Configuración de red actualizada")
             
 # Network validation function
