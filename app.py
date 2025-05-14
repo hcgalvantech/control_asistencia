@@ -54,24 +54,43 @@ if 'device_id' not in st.session_state:
     st.session_state.device_id = get_device_id()
     
 
-
-# Cargar variables de entorno
 # Hybrid approach for both local and cloud
-if 'SUPABASE_URL' in st.secrets:
-    # We're in Streamlit Cloud
-    supabase_url = st.secrets["SUPABASE_URL"]
-    supabase_key = st.secrets["SUPABASE_KEY"]
-else:
-    # We're running locally
-    load_dotenv()
-    supabase_url = os.environ.get("SUPABASE_URL")
-    supabase_key = os.environ.get("SUPABASE_KEY")
+def initialize_supabase():
+    try:
+        # Intentar usar st.secrets primero
+        if hasattr(st, 'secrets') and 'SUPABASE_URL' in st.secrets:
+            # We're in Streamlit Cloud
+            supabase_url = st.secrets["SUPABASE_URL"]
+            supabase_key = st.secrets["SUPABASE_KEY"]
+        else:
+            # Intentar con variables de entorno
+            load_dotenv()
+            supabase_url = os.environ.get("SUPABASE_URL")
+            supabase_key = os.environ.get("SUPABASE_KEY")
+            
+            # Si aún no tenemos las credenciales, mostrar mensaje de error claro
+            if not supabase_url or not supabase_key:
+                st.error("""
+                No se encontraron credenciales de Supabase. Por favor:
+                
+                1. Crea una carpeta .streamlit en el directorio raíz
+                2. Crea un archivo secrets.toml dentro con tus credenciales:
+                   
+                   SUPABASE_URL = "tu_url_de_supabase"
+                   SUPABASE_KEY = "tu_key_de_supabase"
+                   
+                O configura variables de entorno SUPABASE_URL y SUPABASE_KEY
+                """)
+                return None
+                
+        # Inicializar cliente de Supabase
+        return create_client(supabase_url, supabase_key)
+    except Exception as e:
+        st.error(f"Error al inicializar Supabase: {str(e)}")
+        return None
 
-
-# Configuración de Supabase (Usar variables de entorno para seguridad)
-supabase_url = os.environ.get("SUPABASE_URL")
-supabase_key = os.environ.get("SUPABASE_KEY")
-supabase: Client = create_client(supabase_url, supabase_key)
+# Inicializar Supabase
+supabase = initialize_supabase()
 
 # Funciones adaptadas para usar Supabase
 def load_students():
