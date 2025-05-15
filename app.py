@@ -157,19 +157,20 @@ def verify_classroom_code(code, subject, commission):
     
     return len(response.data) > 0
 
-def is_attendance_registered(dni, subject, date):
+def is_attendance_registered(attendance_df, dni, subject, date):
+    """Check if attendance is already registered for the student in the given subject and date."""
     # Format date if needed
     if isinstance(date, datetime.date):
-        date = date.isoformat()
-        
-    response = supabase.table('attendance')\
-        .select('*')\
-        .eq('DNI', dni)\
-        .eq('MATERIA', subject)\
-        .eq('FECHA', date)\
-        .execute()
+        date = date.strftime('%Y-%m-%d')
     
-    return len(response.data) > 0
+    # Filter the attendance dataframe directly instead of querying Supabase again
+    result = attendance_df[
+        (attendance_df['DNI'] == dni) & 
+        (attendance_df['MATERIA'] == subject) & 
+        (attendance_df['FECHA'] == date)
+    ]
+    
+    return not result.empty
     
    
 # Initialize admin config
@@ -248,7 +249,7 @@ def admin_login():
 def admin_dashboard():
     st.title("Panel Administrativo")
     
-    tab1, tab2, tab3 = st.tabs(["Asistencia", "Generador de Códigos", "Configuración"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Asistencia", "Generador de Códigos", "Gestión de Horarios", "Configuración"])
     
     with tab1:
         st.subheader("Control de Asistencia")
@@ -343,8 +344,18 @@ def admin_dashboard():
                 file_name=f"qr_{selected_subject}_{selected_commission}_{code}.png",
                 mime="image/png"
             )
-    
     with tab3:
+        st.subheader("Gestión de Horarios y Alumnos")
+        
+        # Subtabs para gestionar horarios o alumnos
+        horario_tab, alumno_tab = st.tabs(["Gestión de Horarios", "Gestión de Alumnos"])
+        
+        with horario_tab:
+            gestionar_horarios()
+            
+        with alumno_tab:
+            gestionar_alumnos() 
+    with tab4:
         st.subheader("Configuración del Sistema")
         
         admin_config = load_admin_config()
@@ -384,6 +395,327 @@ def admin_dashboard():
             # Guardar configuración en Supabase
             update_admin_config(updated_config)
             st.success("Configuración de red actualizada")
+
+# Función para gestionar horarios
+def gestionar_horarios():
+    st.write("### Horarios de Materias")
+    
+    # Cargar datos actuales
+    schedule_df = load_schedule()
+    
+    # Mostrar horarios actuales
+    if not schedule_df.empty:
+        st.write("Horarios Actuales:")
+        
+        # Filtros para visualizar horarios
+        col1, col2 = st.columns(2)
+        with col1:
+            materias = ["Todas"] + sorted(schedule_df["MATERIA"].unique().tolist())
+            materia_filtro = st.selectbox("Filtrar por Materia:", materias, key="materia_horario_filtro")
+        
+        with col2:
+            comisiones = ["Todas"] + sorted(schedule_df["COMISION"].unique().tolist())
+            comision_filtro = st.selectbox("Filtrar por Comisión:", comisiones, key="comision_horario_filtro")
+        
+        # Aplicar filtros
+        filtered_df = schedule_df.copy()
+        if materia_filtro != "Todas":
+            filtered_df = filtered_df[filtered_df["MATERIA"] == materia_filtro]
+        if comision_filtro != "Todas":
+            filtered_df = filtered_df[filtered_df["COMISION"] == comision_filtro]
+        
+        # Mostrar datos con opción de editar/eliminar
+        st.dataframe(filtered_df)
+        
+        # Opción para eliminar horario
+        if st.checkbox("Eliminar Horario"):
+            # Convertir el DataFrame a una lista de diccionarios para facilitar la selección
+            horarios_list = filtered_df.to_dict('records')
+            
+            # Crear una lista de strings para representar cada horario
+            opciones_horario = [f"{h['MATERIA']} - {h['COMISION']} - {h['FECHA']} ({h['INICIO']}-{h['FINAL']})" for h in horarios_list]
+            
+            # Selector de horario a eliminar
+            horario_a_eliminar = st.selectbox("Seleccione horario a eliminar:", opciones_horario)
+            
+            if st.button("Confirmar Eliminación"):
+                # Obtener índice del horario seleccionado
+                indice = opciones_horario.index(horario_a_eliminar)
+                horario = horarios_list[indice]
+                
+                # Eliminar de Supabase
+                supabase.table('schedule').delete().eq('id', horario['id']).execute()
+                
+                st.success(f"Horario eliminado: {horario_a_eliminar}")
+                st.rerun()
+        
+        # Opción para modificar horario
+        if st.checkbox("Modificar Horario"):
+            # Similar al anterior, permitir seleccionar un horario
+            horarios_list = filtered_df.to_dict('records')
+            opciones_horario = [f"{h['MATERIA']} - {h['COMISION']} - {h['FECHA']} ({h['INICIO']}-{h['FINAL']})" for h in horarios_list]
+            horario_a_modificar = st.selectbox("Seleccione horario a modificar:", opciones_horario)
+            
+            # Obtener el horario seleccionado
+            indice = opciones_horario.index(horario_a_modificar)
+            horario_actual = horarios_list[indice]
+            
+            # Formulario para modificar
+            materia = st.text_input("Materia:", value=horario_actual["MATERIA"])
+            comision = st.text_input("Comisión:", value=horario_actual["COMISION"])
+            fecha = st.text_input("Fecha (formato: Lunes, Martes, etc.):", value=horario_actual["FECHA"])
+            hora_inicio = st.text_input("Hora de inicio (HH:MM):", value=horario_actual["INICIO"])
+            hora_fin = st.text_input("Hora de fin (HH:MM):", value=horario_actual["FINAL"])
+            
+            if st.button("Guardar Cambios"):
+                # Actualizar en Supabase
+                supabase.table('schedule').update({
+                    "MATERIA": materia,
+                    "COMISION": comision,
+                    "FECHA": fecha,
+                    "INICIO": hora_inicio,
+                    "FINAL": hora_fin
+                }).eq('id', horario_actual['id']).execute()
+                
+                st.success("Horario actualizado correctamente")
+                st.rerun()
+    
+    # Agregar nuevo horario
+    st.write("### Agregar Nuevo Horario")
+    
+    # Cargar materias y comisiones existentes para selección
+    materias_existentes = sorted(schedule_df["MATERIA"].unique().tolist()) if not schedule_df.empty else []
+    comisiones_existentes = sorted(schedule_df["COMISION"].unique().tolist()) if not schedule_df.empty else []
+    
+    # Permitir seleccionar de existentes o crear nuevos
+    usar_existente = st.checkbox("Usar materia y comisión existente", value=True)
+    
+    if usar_existente and materias_existentes and comisiones_existentes:
+        materia_nueva = st.selectbox("Materia:", materias_existentes)
+        comision_nueva = st.selectbox("Comisión:", comisiones_existentes)
+    else:
+        materia_nueva = st.text_input("Nueva Materia:")
+        comision_nueva = st.text_input("Nueva Comisión:")
+    
+    # Días de la semana para seleccionar
+    dias_semana = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"]
+    dia_seleccionado = st.selectbox("Día de la semana:", dias_semana)
+    
+    # Horas
+    col1, col2 = st.columns(2)
+    with col1:
+        hora_inicio_nueva = st.time_input("Hora de inicio:", datetime.time(18, 0))
+    with col2:
+        hora_fin_nueva = st.time_input("Hora de fin:", datetime.time(21, 0))
+    
+    if st.button("Agregar Horario"):
+        if materia_nueva and comision_nueva:
+            # Guardar en Supabase
+            nuevo_horario = {
+                "MATERIA": materia_nueva,
+                "COMISION": comision_nueva,
+                "FECHA": dia_seleccionado,
+                "INICIO": hora_inicio_nueva.strftime("%H:%M"),
+                "FINAL": hora_fin_nueva.strftime("%H:%M")
+            }
+            
+            supabase.table('schedule').insert(nuevo_horario).execute()
+            
+            st.success(f"Horario agregado correctamente para {materia_nueva} - {comision_nueva}")
+            st.rerun()
+        else:
+            st.error("Debe completar todos los campos")
+
+# Función para gestionar alumnos
+def gestionar_alumnos():
+    st.write("### Gestión de Alumnos")
+    
+    # Cargar datos de alumnos
+    students_df = load_students()
+    
+    # Mostrar alumnos actuales
+    if not students_df.empty:
+        st.write("Alumnos Registrados:")
+        
+        # Filtros
+        col1, col2 = st.columns(2)
+        with col1:
+            tecnicaturas = ["Todas"] + sorted(students_df["tecnicatura"].unique().tolist())
+            tecnicatura_filtro = st.selectbox("Filtrar por Tecnicatura:", tecnicaturas)
+        
+        with col2:
+            materias = ["Todas"] + sorted(students_df["materia"].unique().tolist())
+            materia_filtro = st.selectbox("Filtrar por Materia:", materias)
+        
+        # Aplicar filtros
+        filtered_df = students_df.copy()
+        if tecnicatura_filtro != "Todas":
+            filtered_df = filtered_df[filtered_df["tecnicatura"] == tecnicatura_filtro]
+        if materia_filtro != "Todas":
+            filtered_df = filtered_df[filtered_df["materia"] == materia_filtro]
+        
+        # Mostrar datos
+        st.dataframe(filtered_df)
+        
+        # Búsqueda por DNI para editar/eliminar
+        st.write("### Buscar alumno por DNI")
+        dni_busqueda = st.text_input("Ingrese DNI:")
+        
+        if dni_busqueda:
+            alumno = students_df[students_df["dni"] == dni_busqueda]
+            
+            if not alumno.empty:
+                st.success(f"Alumno encontrado: {alumno['apellido_nombre'].iloc[0]}")
+                
+                # Opciones
+                accion = st.radio("Acción:", ["Modificar Datos", "Eliminar Alumno", "Modificar Materias"])
+                
+                if accion == "Modificar Datos":
+                    # Formulario con datos actuales
+                    apellido_nombre = st.text_input("Apellido y Nombre:", value=alumno["apellido_nombre"].iloc[0])
+                    tecnicatura = st.text_input("Tecnicatura:", value=alumno["tecnicatura"].iloc[0])
+                    telefono = st.text_input("Teléfono:", value=str(alumno["telefono"].iloc[0]))
+                    correo = st.text_input("Correo electrónico:", value=str(alumno["correo"].iloc[0]) if "correo" in alumno.columns and not pd.isna(alumno["correo"].iloc[0]) else "")
+                    
+                    if st.button("Guardar Cambios"):
+                        # Actualizar en Supabase - usamos id para la actualización
+                        supabase.table('students').update({
+                            "apellido_nombre": apellido_nombre,
+                            "tecnicatura": tecnicatura,
+                            "telefono": telefono,
+                            "correo": correo
+                        }).eq('id', alumno['id'].iloc[0]).execute()
+                        
+                        st.success("Datos actualizados correctamente")
+                        st.rerun()
+                
+                elif accion == "Eliminar Alumno":
+                    if st.button("Confirmar Eliminación", type="primary"):
+                        # Eliminar de Supabase usando id
+                        supabase.table('students').delete().eq('id', alumno['id'].iloc[0]).execute()
+                        
+                        st.success(f"Alumno {alumno['apellido_nombre'].iloc[0]} eliminado correctamente")
+                        st.rerun()
+                
+                elif accion == "Modificar Materias":
+                    # Mostrar materias actuales del alumno seleccionado
+                    materias_alumno = students_df[students_df["dni"] == dni_busqueda][["materia", "comision", "id"]]
+                    st.write("Materias actuales:")
+                    st.dataframe(materias_alumno[["materia", "comision"]])  # No mostrar ID al usuario
+                    
+                    # Opción para agregar/quitar materias
+                    opcion_materia = st.radio("Opción:", ["Agregar Materia", "Quitar Materia"])
+                    
+                    if opcion_materia == "Agregar Materia":
+                        # Cargar lista de materias disponibles
+                        schedule_df = load_schedule()
+                        materias_disponibles = sorted(schedule_df["MATERIA"].unique().tolist()) if not schedule_df.empty else []
+                        
+                        if materias_disponibles:
+                            # Seleccionar materia
+                            nueva_materia = st.selectbox("Seleccione materia:", materias_disponibles)
+                            
+                            # Filtrar comisiones para esa materia
+                            comisiones = schedule_df[schedule_df["MATERIA"] == nueva_materia]["COMISION"].unique().tolist()
+                            nueva_comision = st.selectbox("Seleccione comisión:", comisiones)
+                            
+                            if st.button("Agregar Materia"):
+                                # Verificar que no tenga la materia ya asignada
+                                if ((materias_alumno["materia"] == nueva_materia) & 
+                                    (materias_alumno["comision"] == nueva_comision)).any():
+                                    st.error("El alumno ya está inscripto en esta materia y comisión")
+                                else:
+                                    # Agregar a Supabase - creamos un nuevo registro manteniendo los datos existentes
+                                    new_student_entry = {
+                                        "dni": dni_busqueda,
+                                        "apellido_nombre": alumno["apellido_nombre"].iloc[0],
+                                        "tecnicatura": alumno["tecnicatura"].iloc[0],
+                                        "telefono": alumno["telefono"].iloc[0],
+                                        "correo": alumno["correo"].iloc[0] if "correo" in alumno.columns and not pd.isna(alumno["correo"].iloc[0]) else "",
+                                        "materia": nueva_materia,
+                                        "comision": nueva_comision
+                                    }
+                                    supabase.table('students').insert(new_student_entry).execute()
+                                    
+                                    st.success(f"Materia {nueva_materia} agregada correctamente")
+                                    st.rerun()
+                        else:
+                            st.warning("No hay materias disponibles en el sistema")
+                    
+                    else:  # Quitar Materia
+                        if not materias_alumno.empty:
+                            # Opciones de materias para quitar
+                            materias_opciones = [f"{row['materia']} - {row['comision']}" for _, row in materias_alumno.iterrows()]
+                            materia_a_quitar = st.selectbox("Seleccione materia a quitar:", materias_opciones)
+                            
+                            if st.button("Quitar Materia"):
+                                indice = materias_opciones.index(materia_a_quitar)
+                                registro_a_quitar = materias_alumno.iloc[indice]
+                                
+                                # Eliminar esta combinación específica usando el id
+                                supabase.table('students').delete().eq('id', registro_a_quitar['id']).execute()
+                                
+                                st.success(f"Materia {registro_a_quitar['materia']} quitada correctamente")
+                                st.rerun()
+                        else:
+                            st.warning("El alumno no tiene materias asignadas")
+            else:
+                st.error("DNI no encontrado")
+    
+    # Agregar nuevo alumno
+    st.write("### Registrar Nuevo Alumno")
+    
+    nuevo_dni = st.text_input("DNI:", key="nuevo_dni")
+    nuevo_nombre = st.text_input("Apellido y Nombre:", key="nuevo_nombre")
+    nueva_tecnicatura = st.text_input("Tecnicatura:", key="nueva_tecnicatura")
+    nuevo_telefono = st.text_input("Teléfono:", key="nuevo_telefono")
+    nuevo_correo = st.text_input("Correo electrónico:", key="nuevo_correo")
+    
+    # Para asignar materia directamente
+    agregar_materia = st.checkbox("Asignar materia ahora")
+    
+    if agregar_materia:
+        schedule_df = load_schedule()
+        materias_disponibles = sorted(schedule_df["MATERIA"].unique().tolist()) if not schedule_df.empty else []
+        
+        if materias_disponibles:
+            materia_inicial = st.selectbox("Seleccione materia:", materias_disponibles)
+            
+            # Filtrar comisiones para esa materia
+            comisiones = schedule_df[schedule_df["MATERIA"] == materia_inicial]["COMISION"].unique().tolist()
+            comision_inicial = st.selectbox("Seleccione comisión:", comisiones)
+        else:
+            st.warning("No hay materias disponibles en el sistema")
+            materia_inicial = "Sin asignar"
+            comision_inicial = "Sin asignar"
+    else:
+        materia_inicial = "Sin asignar"
+        comision_inicial = "Sin asignar"
+    
+    if st.button("Registrar Alumno"):
+        if nuevo_dni and nuevo_nombre and nueva_tecnicatura:
+            # Verificar que no exista
+            if (students_df["dni"] == nuevo_dni).any():
+                st.error("Ya existe un alumno con ese DNI")
+            else:
+                # Insertar en Supabase
+                new_student = {
+                    "dni": nuevo_dni,
+                    "apellido_nombre": nuevo_nombre,
+                    "tecnicatura": nueva_tecnicatura,
+                    "telefono": nuevo_telefono,
+                    "correo": nuevo_correo,
+                    "materia": materia_inicial,
+                    "comision": comision_inicial
+                }
+                supabase.table('students').insert(new_student).execute()
+                
+                st.success(f"Alumno {nuevo_nombre} registrado correctamente")
+                if materia_inicial == "Sin asignar":
+                    st.info("Ahora puede buscar al alumno por DNI para asignarle materias")
+                st.rerun()
+        else:
+            st.error("Debe completar DNI, Nombre y Tecnicatura")
             
 # Network validation function
 def validate_network():

@@ -53,6 +53,8 @@ def load_schedule():
     """Load class schedule from Supabase"""
     supabase = get_supabase_client()
     response = supabase.table('schedule').select('*').execute()
+    if not response.data:
+        return pd.DataFrame(columns=["MATERIA", "COMISION", "FECHA", "INICIO", "FINAL", "id"])
     return pd.DataFrame(response.data)
 
 def load_admin_config():
