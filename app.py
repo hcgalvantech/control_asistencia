@@ -13,13 +13,17 @@ from pyzbar.pyzbar import decode
 import io
 import numpy as np
 import cv2
-from utils import validate_time_for_subject, detect_mobile_device, is_attendance_registered, save_attendance, validate_device_for_subject
+from utils import validate_time_for_subject, detect_mobile_device
 from network import check_wifi_connection, is_ip_in_allowed_range, get_local_ip, get_argentina_datetime, get_device_id
-from database import load_students, load_attendance, load_schedule, load_admin_config, save_verification_code
-import os
-from supabase import create_client, Client
-from dotenv import load_dotenv
+# Importamos todas las funciones de database
+from database import (
+    load_students, load_attendance, load_schedule, load_admin_config, 
+    update_admin_config, save_verification_code, save_classroom_code,
+    verify_classroom_code, is_attendance_registered, save_attendance,
+    validate_device_for_subject, get_supabase_client
+)
 
+# [Configuración inicial de Streamlit...]
 # Detectar si estamos en Streamlit Cloud
 if not os.environ.get('STREAMLIT_SHARING'):
     os.environ['STREAMLIT_SHARING'] = 'true'
@@ -31,151 +35,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
-# Initialize session state variables
-if 'attendance_registered' not in st.session_state:
-    st.session_state.attendance_registered = False
-if 'registration_info' not in st.session_state:
-    st.session_state.registration_info = {}
-# -----------------------    
-if 'authenticated' not in st.session_state:
-    st.session_state.authenticated = False
-if 'student_data' not in st.session_state:
-    st.session_state.student_data = None
-if 'admin_mode' not in st.session_state:
-    st.session_state.admin_mode = False
-if 'verification_step' not in st.session_state:
-    st.session_state.verification_step = False
-if 'verification_code' not in st.session_state:
-    st.session_state.verification_code = None
-if 'phone_verified' not in st.session_state:
-    st.session_state.phone_verified = False
-if 'device_id' not in st.session_state:
-    st.session_state.device_id = get_device_id()
-    
-
-# Hybrid approach for both local and cloud
-def initialize_supabase():
-    try:
-        # Intentar usar st.secrets primero
-        if hasattr(st, 'secrets') and 'SUPABASE_URL' in st.secrets:
-            # We're in Streamlit Cloud
-            supabase_url = st.secrets["SUPABASE_URL"]
-            supabase_key = st.secrets["SUPABASE_KEY"]
-        else:
-            # Intentar con variables de entorno
-            load_dotenv()
-            supabase_url = os.environ.get("SUPABASE_URL")
-            supabase_key = os.environ.get("SUPABASE_KEY")
-            
-            # Si aún no tenemos las credenciales, mostrar mensaje de error claro
-            if not supabase_url or not supabase_key:
-                st.error("""
-                No se encontraron credenciales de Supabase. Por favor:
-                
-                1. Crea una carpeta .streamlit en el directorio raíz
-                2. Crea un archivo secrets.toml dentro con tus credenciales:
-                   
-                   SUPABASE_URL = "tu_url_de_supabase"
-                   SUPABASE_KEY = "tu_key_de_supabase"
-                   
-                O configura variables de entorno SUPABASE_URL y SUPABASE_KEY
-                """)
-                return None
-                
-        # Inicializar cliente de Supabase
-        return create_client(supabase_url, supabase_key)
-    except Exception as e:
-        st.error(f"Error al inicializar Supabase: {str(e)}")
-        return None
-
-# Inicializar Supabase
-supabase = initialize_supabase()
-
-# Funciones adaptadas para usar Supabase
-def load_students():
-    response = supabase.table('students').select('*').execute()
-    return pd.DataFrame(response.data)
-
-def load_attendance():
-    response = supabase.table('attendance').select('*').execute()
-    return pd.DataFrame(response.data)
-
-def save_attendance(dni, name, subject, commission, date, time, device, ip, device_id):
-    # Ensure date is in ISO format for Supabase date type
-    if isinstance(date, str) and '/' in date:
-        # Convert dd/mm/yyyy to ISO format
-        date_parts = date.split('/')
-        date = f"{date_parts[2]}-{date_parts[1]}-{date_parts[0]}"
-    
-    data = {
-        'DNI': dni,
-        'APELLIDO Y NOMBRE': name,
-        'MATERIA': subject,
-        'COMISION': commission,
-        'FECHA': date,
-        'HORA': time,
-        'DISPOSITIVO': device,
-        'IP': ip,
-        'DEVICE_ID': device_id
-    }
-    supabase.table('attendance').insert(data).execute()
-
-    # También guardar uso del dispositivo
-    device_data = {
-        'DEVICE_ID': device_id,
-        'DNI': dni,
-        'MATERIA': subject,
-        'FECHA': date,
-        'TIMESTAMP': datetime.datetime.now().isoformat()
-    }
-    supabase.table('device_usage').insert(device_data).execute()
-
-def save_classroom_code(code, subject, commission, expiry_time):
-    # Primero eliminar códigos expirados
-    now = datetime.datetime.now().isoformat()
-    supabase.table('classroom_codes').delete().lt('EXPIRY_TIME', now).execute()
-    
-    # Luego insertar el nuevo código
-    data = {
-        'CODE': code,
-        'SUBJECT': subject,
-        'COMMISSION': commission,
-        'EXPIRY_TIME': expiry_time
-    }
-    supabase.table('classroom_codes').insert(data).execute()
-     
-def verify_classroom_code(code, subject, commission):
-    now = datetime.datetime.now().isoformat()
-    response = supabase.table('classroom_codes')\
-        .select('*')\
-        .eq('CODE', code)\
-        .eq('SUBJECT', subject)\
-        .eq('COMMISSION', commission)\
-        .gt('EXPIRY_TIME', now)\
-        .execute()
-    
-    return len(response.data) > 0
-
-def is_attendance_registered(attendance_df, dni, subject, date):
-    """Check if attendance is already registered for the student in the given subject and date."""
-    # Format date if needed
-    if isinstance(date, datetime.date):
-        date = date.strftime('%Y-%m-%d')
-    
-    # Filter the attendance dataframe directly instead of querying Supabase again
-    result = attendance_df[
-        (attendance_df['DNI'] == dni) & 
-        (attendance_df['MATERIA'] == subject) & 
-        (attendance_df['FECHA'] == date)
-    ]
-    
-    return not result.empty
-    
-   
-# Initialize admin config
-# Admin config is now managed in Supabase
-# Initialize it when loading if needed (handled by load_admin_config function)
 
 # Sidebar for navigation
 def sidebar():
@@ -199,32 +58,458 @@ def sidebar():
                 st.session_state.verification_code = None
                 st.session_state.phone_verified = False
                 st.rerun()
+                
+# Inicializar variables de estado de sesión
+if 'attendance_registered' not in st.session_state:
+    st.session_state.attendance_registered = False
+if 'registration_info' not in st.session_state:
+    st.session_state.registration_info = {}
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
+if 'student_data' not in st.session_state:
+    st.session_state.student_data = None
+if 'admin_mode' not in st.session_state:
+    st.session_state.admin_mode = False
+if 'verification_step' not in st.session_state:
+    st.session_state.verification_step = False
+if 'verification_code' not in st.session_state:
+    st.session_state.verification_code = None
+if 'phone_verified' not in st.session_state:
+    st.session_state.phone_verified = False
+if 'device_id' not in st.session_state:
+    st.session_state.device_id = get_device_id()
 
-# Add these functions to handle admin config in Supabase
-def load_admin_config():
-    response = supabase.table('admin_config').select('*').execute()
-    if response.data:
-        return response.data[0]
-    else:
-        # Create default config if none exists
-        default_config = {
-            "allowed_ip_ranges": ["192.168.1.0/24"],
-            "admin_username": "admin",
-            "admin_password": "admin123"
-        }
-        supabase.table('admin_config').insert(default_config).execute()
-        return default_config
+# Crear función para generar código aleatorio
+def generate_classroom_code():
+    """Generar código aleatorio alfanumérico de 6 caracteres"""
+    chars = string.ascii_uppercase + string.digits
+    return ''.join(random.choice(chars) for _ in range(6))
 
-def update_admin_config(config_data):
-    # Get the id of the existing config
-    response = supabase.table('admin_config').select('id').execute()
-    if response.data:
-        config_id = response.data[0]['id']
-        supabase.table('admin_config').update(config_data).eq('id', config_id).execute()
-    else:
-        # Create if doesn't exist
-        supabase.table('admin_config').insert(config_data).execute()
+# Función para crear código QR
+def create_qr_code(data):
+    """Generar imagen de código QR"""
+    qr = qrcode.QRCode(
+        version=1,
+        error_correction=qrcode.constants.ERROR_CORRECT_L,
+        box_size=10,
+        border=4,
+    )
+    qr.add_data(data)
+    qr.make(fit=True)
+    
+    img = qr.make_image(fill_color="black", back_color="white")
+    
+    # Convertir a bytes para Streamlit
+    buffered = BytesIO()
+    img.save(buffered, format="PNG")
+    return buffered.getvalue()
+
+# Función para procesar código QR
+def process_qr_code(uploaded_file):
+    """Procesar imagen QR y extraer el código"""
+    try:
+        if uploaded_file is None:
+            return None
+            
+        # Convertir el archivo subido a un formato que pyzbar pueda procesar
+        image_bytes = uploaded_file.getvalue()
+        image = Image.open(io.BytesIO(image_bytes))
         
+        # También probar con OpenCV para mejorar la detección
+        nparr = np.frombuffer(image_bytes, np.uint8)
+        img_cv = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
+        
+        # Intentar decodificar primero con PIL
+        decoded_objects = decode(image)
+        
+        # Si no funciona con PIL, intentar con OpenCV
+        if not decoded_objects:
+            # Aplicar umbral adaptativo para mejorar la calidad
+            img_cv = cv2.adaptiveThreshold(img_cv, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                          cv2.THRESH_BINARY, 11, 2)
+            decoded_objects = decode(Image.fromarray(img_cv))
+        
+        if decoded_objects:
+            qr_data = decoded_objects[0].data.decode('utf-8')
+            
+            # Si es un código de clase, podría tener formato: "CODIGO|MATERIA|COMISION"
+            try:
+                parts = qr_data.split('|')
+                if len(parts) >= 1:
+                    # Retornar solo el código (primera parte)
+                    return parts[0]
+                else:
+                    return qr_data
+            except:
+                return qr_data
+        else:
+            return None
+    except Exception as e:
+        st.error(f"Error al procesar el código QR: {str(e)}")
+        return None
+
+# Función para validar red
+def validate_network():
+    admin_config = load_admin_config()
+    allowed_ranges = admin_config.get("allowed_ip_ranges", ["192.168.1.0/24"])
+    
+    # Si estamos en desarrollo local (localhost), omitir verificación de red
+    client_ip = get_local_ip()
+    if client_ip == "127.0.0.1" or client_ip.startswith("localhost"):
+        st.info("Ejecutando en modo de desarrollo local")
+        return True
+        
+    if not check_wifi_connection():
+        st.error("❌ Debe estar conectado a una red WiFi para utilizar el sistema")
+        return False
+    
+    if not is_ip_in_allowed_range(client_ip, allowed_ranges):
+        st.error(f"❌ Su dirección IP ({client_ip}) está fuera del rango permitido")
+        return False
+        
+    return True
+
+# Función para generar código de verificación
+def generate_verification_code(dni, phone):
+    # Esta función simplemente registra que el usuario ha sido verificado
+    save_verification_code(dni, phone, "verification_skipped")
+    return True
+
+# Verificación de teléfono
+def phone_verification(dni, phone):
+    st.subheader("Verificación de Teléfono")
+    st.info(f"Nuevo sistema de verificación basado en QR activo.")
+    st.session_state.phone_verified = True
+    st.success("Verificación completada")
+    st.rerun()
+
+# Función para registrar asistencia
+def register_attendance_function(selected_dni, student_name, selected_subject, commission, current_date, current_time, device_info):
+    # Guardar asistencia
+    success = save_attendance(
+        selected_dni,
+        student_name,
+        selected_subject,
+        commission,
+        current_date.strftime('%Y-%m-%d'),
+        current_time.strftime('%H:%M:%S'),
+        device_info["hostname"],
+        device_info["ip"],
+        device_info["device_id"]
+    )
+    
+    if success:
+        # Establecer estado de confirmación
+        st.session_state.attendance_registered = True
+        st.session_state.registration_info = {
+            "student_name": student_name,
+            "subject": selected_subject,
+            "time": current_time.strftime('%H:%M:%S'),
+            "date": current_date.strftime('%d/%m/%Y')
+        }
+        st.rerun()
+    else:
+        st.error("Error al registrar la asistencia. Intente nuevamente.")
+
+# Función para autenticación de estudiante (modificada para corregir el error de DNI)
+def student_login():
+    st.title("Sistema de Registro de Asistencia")
+    
+    # Validación de red
+    if not validate_network():
+        return
+        
+    # Mostrar confirmación si la asistencia ya está registrada
+    if st.session_state.attendance_registered:
+        st.success(f"✅ Asistencia registrada correctamente")
+        
+        # Panel con información de la asistencia registrada
+        st.info(f"""
+        **Detalles del registro:**
+        - **Estudiante:** {st.session_state.registration_info['student_name']}
+        - **Materia:** {st.session_state.registration_info['subject']}
+        - **Fecha:** {st.session_state.registration_info['date']}
+        - **Hora:** {st.session_state.registration_info['time']}
+        """)
+        
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
+            if st.button("Salir", type="primary"):
+                # Limpiar todas las variables de sesión
+                st.session_state.authenticated = False
+                st.session_state.student_data = None
+                st.session_state.verification_step = False
+                st.session_state.verification_code = None
+                st.session_state.phone_verified = False
+                st.session_state.attendance_registered = False
+                st.session_state.registration_info = {}
+                st.rerun()
+        
+        with col2:
+            if st.button("Registrar otra asistencia"):
+                # Mantener algunas variables pero reiniciar el proceso
+                st.session_state.attendance_registered = False
+                st.session_state.registration_info = {}
+                st.rerun()
+        
+        # Mensaje de redirección automática con contador
+        import time
+        placeholder = st.empty()
+        for i in range(15, 0, -1):
+            placeholder.warning(f"Se cerrará automáticamente en {i} segundos...")
+            time.sleep(1)
+        
+        # Después de la cuenta regresiva, limpia todo y regresa al inicio
+        st.session_state.authenticated = False
+        st.session_state.student_data = None
+        st.session_state.verification_step = False
+        st.session_state.verification_code = None
+        st.session_state.phone_verified = False
+        st.session_state.attendance_registered = False
+        st.session_state.registration_info = {}
+        st.rerun()
+        
+        # Detener la ejecución aquí para no mostrar el resto del formulario
+        return
+
+    ####
+    students_df = load_students()
+    
+    argentina_now, current_date, current_time = get_argentina_datetime()
+    
+    st.subheader("Registro de Asistencia")
+    st.info(f"Fecha actual: {current_date.strftime('%d/%m/%Y')} - Hora: {current_time.strftime('%H:%M:%S')} (Hora de Buenos Aires)")
+    
+    # Obtener ID del dispositivo
+    device_id = st.session_state.device_id
+    
+    # Detectar si es dispositivo móvil
+    is_mobile = detect_mobile_device()
+    if not is_mobile:
+        st.warning("⚠️ Este sistema está diseñado para utilizarse desde un dispositivo móvil.")
+    
+    # IMPORTANTE: Usamos la columna correcta "dni" (minúscula) de acuerdo a la estructura de la BD
+    dni_list = [""] + sorted(students_df["dni"].astype(str).unique().tolist())
+    selected_dni = st.selectbox("Seleccione su DNI:", dni_list)
+    
+    if selected_dni:
+        # CORRECCIÓN: Usamos el nombre de columna correcto "dni" en minúscula
+        student_data = students_df[students_df["dni"].astype(str) == selected_dni].to_dict('records')
+        
+        if student_data:
+            student_data = student_data[0]
+            st.session_state.student_data = student_data
+            # CORRECCIÓN: Usamos "apellido_nombre" en lugar de "APELLIDO Y NOMBRE"
+            st.info(f"Estudiante: {student_data['apellido_nombre']}")
+            st.info(f"Tecnicatura: {student_data['tecnicatura']}")
+            
+            # Verificación del teléfono
+            student_phone = str(student_data.get('telefono', ''))
+            
+            # Proceso de verificación simplificado
+            if not st.session_state.phone_verified:
+                # Verificación simplificada para móviles
+                if is_mobile and st.checkbox("Este es mi celular registrado", value=False):
+                    st.session_state.phone_verified = True
+                    st.success("Dispositivo móvil reconocido")
+                    st.rerun()
+                else:
+                    st.subheader("Verificación de Presencia")
+                    
+                    # CORRECCIÓN: Usamos "materia" en minúscula
+                    student_subjects = students_df[students_df["dni"].astype(str) == selected_dni]["materia"].unique().tolist()
+                    
+                    if student_subjects:
+                        selected_subject = st.selectbox("Seleccione materia:", student_subjects)
+                        # CORRECCIÓN: Usamos "comision" en minúscula
+                        commission = students_df[(students_df["dni"].astype(str) == selected_dni) & 
+                                            (students_df["materia"] == selected_subject)]["comision"].iloc[0]
+                        
+                        verification_method = st.radio(
+                            "Método de verificación:",
+                            ["Escanear código QR", "Ingresar código manualmente"]
+                        )
+                        
+                        if verification_method == "Escanear código QR":
+                            st.info("Escanee el código QR mostrado por el profesor")
+                            uploaded_file = st.camera_input("Escanear código QR")
+                            
+                            if uploaded_file is not None:
+                                # Procesar el código QR
+                                extracted_code = process_qr_code(uploaded_file)
+                                
+                                if extracted_code:
+                                    # Mostrar el código extraído para que el usuario confirme
+                                    st.success(f"Código QR detectado: {extracted_code}")
+                                    
+                                    # Crear una caja de verificación para que el usuario confirme
+                                    confirm = st.checkbox("Confirmar que este es el código correcto", value=True)
+                                    
+                                    # El usuario también puede editar el código si es necesario
+                                    code = st.text_input("Código:", value=extracted_code, max_chars=6, key="qr_code_input")
+                                    
+                                    if st.button("Verificar código", key="verify_qr_code"):
+                                        # CORRECCIÓN: Usar SUBJECT y COMMISSION para verificar código
+                                        if verify_classroom_code(code, selected_subject, commission):
+                                            # Register attendance with proper arguments
+                                            device_info = {
+                                                "hostname": socket.gethostname(),
+                                                "ip": get_local_ip(),
+                                                "device_id": device_id
+                                            }
+                                            
+                                            register_attendance_function(
+                                                selected_dni,
+                                                student_data['apellido_nombre'],
+                                                selected_subject,
+                                                commission,
+                                                current_date,
+                                                current_time,
+                                                device_info
+                                            )
+                                        else:
+                                            st.error("Código inválido o expirado")
+                                else:
+                                    st.warning("No se pudo detectar un código QR válido. Por favor, intente de nuevo o ingrese el código manualmente.")
+                                    code = st.text_input("Código:", max_chars=6, key="manual_qr_code_input")
+                                    
+                                    if st.button("Verificar código", key="verify_manual_qr_code"):
+                                        if verify_classroom_code(code, selected_subject, commission):
+                                            device_info = {
+                                                "hostname": socket.gethostname(),
+                                                "ip": get_local_ip(),
+                                                "device_id": device_id
+                                            }
+                                            
+                                            register_attendance_function(
+                                                selected_dni,
+                                                student_data['apellido_nombre'],
+                                                selected_subject,
+                                                commission,
+                                                current_date,
+                                                current_time,
+                                                device_info
+                                            )
+                                        else:
+                                            st.error("Código inválido o expirado")
+                                
+                    else:
+                        st.warning("No hay materias disponibles para este estudiante")
+                
+                return # Exit here until verification is complete
+            
+            # Continue with attendance process after verification
+            
+            # Get available subjects for this student
+            student_subjects = students_df[students_df["dni"].astype(str) == selected_dni]["materia"].unique().tolist()
+            
+            # Check which subjects are available at current time
+            schedule_df = load_schedule()
+            available_subjects = []
+
+            for subject in student_subjects:
+                # CORRECCIÓN: Usar "comision" en minúscula
+                student_commission = students_df[(students_df["dni"].astype(str) == selected_dni) & 
+                                                (students_df["materia"] == subject)]["comision"].iloc[0]
+                
+                # CORRECCIÓN: Usar los nombres de columnas como están en la base de datos
+                subject_schedule = schedule_df[(schedule_df["MATERIA"] == subject) & 
+                                            (schedule_df["COMISION"] == student_commission)]
+                
+                if not subject_schedule.empty:
+                    for _, row in subject_schedule.iterrows():
+                        if validate_time_for_subject(current_date, current_time, row["FECHA"], row["INICIO"], row["FINAL"]):
+                            available_subjects.append(subject)
+                            break  # Si encontramos al menos un horario válido, añadimos la materia
+
+            if available_subjects:
+                selected_subject = st.selectbox("Materia disponible:", available_subjects)
+                commission = students_df[(students_df["dni"].astype(str) == selected_dni) & 
+                                    (students_df["materia"] == selected_subject)]["comision"].iloc[0]
+                
+                # Check if attendance already registered
+                # CORRECCIÓN: Pasamos directamente DNI, asunto y fecha a la función is_attendance_registered
+                if is_attendance_registered(selected_dni, selected_subject, current_date):
+                    st.warning("Ya registró su asistencia para esta materia hoy.")
+                else:
+                    # Check if device valid
+                    device_valid = validate_device_for_subject(device_id, selected_subject, current_date.strftime('%Y-%m-%d'))
+                    
+                    if not device_valid:
+                        st.error("Este dispositivo ya fue utilizado para registrar asistencia en esta materia y fecha.")
+                    else:
+                        # QR code verification - offer two options
+                        verification_method = st.radio(
+                            "Método de verificación:",
+                            ["Escanear código QR", "Ingresar código manualmente"]
+                        )
+                        
+                        if verification_method == "Escanear código QR":
+                            st.info("Escanee el código QR mostrado por el profesor")
+                            uploaded_file = st.camera_input("Tomar foto del código QR")
+                            
+                            if uploaded_file is not None:
+                                # CORRECCIÓN: Procesar el código QR correctamente
+                                extracted_code = process_qr_code(uploaded_file)
+                                
+                                if extracted_code:
+                                    st.success(f"Código QR detectado: {extracted_code}")
+                                    code = extracted_code
+                                else:
+                                    st.info("No se pudo procesar el QR. Por favor, ingrese el código manualmente.")
+                                    code = st.text_input("Código:", max_chars=6, key="qr_code_input")
+                                
+                                if st.button("Verificar código", key="verify_qr_code"):
+                                    if verify_classroom_code(code, selected_subject, commission):
+                                        device_info = {
+                                            "hostname": socket.gethostname(),
+                                            "ip": get_local_ip(),
+                                            "device_id": device_id
+                                        }
+                                        
+                                        register_attendance_function(
+                                            selected_dni,
+                                            student_data['apellido_nombre'],
+                                            selected_subject,
+                                            commission,
+                                            current_date,
+                                            current_time,
+                                            device_info
+                                        )
+                                    else:
+                                        st.error("Código inválido o expirado")
+                                        
+                        else:  # Manual code entry
+                            st.info("Ingrese el código mostrado por el profesor")
+                            code = st.text_input("Código:", max_chars=6, key="manual_code_input")
+                            
+                            if st.button("Verificar código", key="verify_manual_code"):
+                                if verify_classroom_code(code, selected_subject, commission):
+                                    device_info = {
+                                        "hostname": socket.gethostname(),
+                                        "ip": get_local_ip(),
+                                        "device_id": device_id
+                                    }
+                                    
+                                    register_attendance_function(
+                                        selected_dni,
+                                        student_data['apellido_nombre'],
+                                        selected_subject,
+                                        commission,
+                                        current_date,
+                                        current_time,
+                                        device_info
+                                    )
+                                else:
+                                    st.error("Código inválido o expirado")
+            else:
+                st.warning("No hay materias disponibles en este horario.")
+        else:
+            st.error("DNI no encontrado en el sistema.")
+#############################
+# Función para el login de administrador
+#############################
 # Admin login form
 def admin_login():
     st.subheader("Acceso Administrador")
@@ -716,457 +1001,7 @@ def gestionar_alumnos():
                 st.rerun()
         else:
             st.error("Debe completar DNI, Nombre y Tecnicatura")
-            
-# Network validation function
-def validate_network():
-    admin_config = load_admin_config()
-    allowed_ranges = admin_config.get("allowed_ip_ranges", ["192.168.1.0/24"])
-    
-    # Si estamos en desarrollo local (localhost), omitir verificación de red
-    client_ip = get_local_ip()
-    if client_ip == "127.0.0.1" or client_ip.startswith("localhost"):
-        st.info("Ejecutando en modo de desarrollo local")
-        return True
-        
-    if not check_wifi_connection():
-        st.error("❌ Debe estar conectado a una red WiFi para utilizar el sistema")
-        return False
-    
-    if not is_ip_in_allowed_range(client_ip, allowed_ranges):
-        st.error(f"❌ Su dirección IP ({client_ip}) está fuera del rango permitido")
-        return False
-        
-    return True
-
-def generate_classroom_code():
-    """Generate a random 6-character alphanumeric code"""
-    chars = string.ascii_uppercase + string.digits
-    return ''.join(random.choice(chars) for _ in range(6))
-
-def save_classroom_code(code, subject, commission, expiry_time):
-    # First delete expired codes
-    now = datetime.datetime.now().isoformat()
-    supabase.table('classroom_codes').delete().lt('EXPIRY_TIME', now).execute()
-    
-    # Then insert the new code
-    data = {
-        'CODE': code,
-        'SUBJECT': subject,
-        'COMMISSION': commission,
-        'EXPIRY_TIME': expiry_time
-    }
-    supabase.table('classroom_codes').insert(data).execute()
-     
-def verify_classroom_code(code, subject, commission):
-    now = datetime.datetime.now().isoformat()
-    response = supabase.table('classroom_codes')\
-        .select('*')\
-        .eq('CODE', code)\
-        .eq('SUBJECT', subject)\
-        .eq('COMMISSION', commission)\
-        .gt('EXPIRY_TIME', now)\
-        .execute()
-    
-    return len(response.data) > 0
-
-def create_qr_code(data):
-    """Generate QR code image"""
-    qr = qrcode.QRCode(
-        version=1,
-        error_correction=qrcode.constants.ERROR_CORRECT_L,
-        box_size=10,
-        border=4,
-    )
-    qr.add_data(data)
-    qr.make(fit=True)
-    
-    img = qr.make_image(fill_color="black", back_color="white")
-    
-    # Convert to bytes for Streamlit
-    buffered = BytesIO()
-    img.save(buffered, format="PNG")
-    return buffered.getvalue()
-
-# Reemplazar la parte del código que maneja la subida de la imagen QR con esto:
-def process_qr_code(uploaded_file):
-    """Procesa la imagen QR y extrae el código"""
-    try:
-        # Leer la imagen cargada
-        if uploaded_file is None:
-            return None
-            
-        # Convertir el archivo subido a un formato que pyzbar pueda procesar
-        image_bytes = uploaded_file.getvalue()
-        image = Image.open(io.BytesIO(image_bytes))
-        
-        # También probar con OpenCV para mejorar la detección
-        nparr = np.frombuffer(image_bytes, np.uint8)
-        img_cv = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
-        
-        # Intentar decodificar primero con PIL
-        decoded_objects = decode(image)
-        
-        # Si no funciona con PIL, intentar con OpenCV
-        if not decoded_objects:
-            # Aplicar umbral adaptativo para mejorar la calidad
-            img_cv = cv2.adaptiveThreshold(img_cv, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                          cv2.THRESH_BINARY, 11, 2)
-            decoded_objects = decode(Image.fromarray(img_cv))
-        
-        # Verificar si se encontró algún código
-        if decoded_objects:
-            # Extraer el primer código QR encontrado
-            qr_data = decoded_objects[0].data.decode('utf-8')
-            
-            # Si es un código de clase, podría tener formato: "CODIGO|MATERIA|COMISION"
-            try:
-                parts = qr_data.split('|')
-                if len(parts) >= 1:
-                    # Retornar solo el código (primera parte)
-                    return parts[0]
-                else:
-                    return qr_data
-            except:
-                # Si hay algún error en el formato, devolver el dato crudo
-                return qr_data
-        else:
-            return None
-    except Exception as e:
-        st.error(f"Error al procesar el código QR: {str(e)}")
-        return None
-    
-# FIXED: Removed send_verification_code function calls 
-def generate_verification_code(dni, phone):
-    # Esta función simplemente registra que el usuario ha sido verificado
-    save_verification_code(dni, phone, "verification_skipped")
-    return True
-
-
-# FIXED: Removed references to send_verification_code and verify_code
-def phone_verification(dni, phone):
-    st.subheader("Verificación de Teléfono")
-    st.info(f"Nuevo sistema de verificación basado en QR activo.")
-    st.session_state.phone_verified = True
-    st.success("Verificación completada")
-    st.rerun()
-                
-# Student authentication
-def student_login():
-    st.title("Sistema de Registro de Asistencia")
-    
-    # Validación de red
-    if not validate_network():
-        return
-    # Al inicio de la función student_login(), después de validar la red:
-    if st.session_state.attendance_registered:
-        st.success(f"✅ Asistencia registrada correctamente")
-        
-        # Panel con información de la asistencia registrada
-        st.info(f"""
-        **Detalles del registro:**
-        - **Estudiante:** {st.session_state.registration_info['student_name']}
-        - **Materia:** {st.session_state.registration_info['subject']}
-        - **Fecha:** {st.session_state.registration_info['date']}
-        - **Hora:** {st.session_state.registration_info['time']}
-        """)
-        
-        col1, col2 = st.columns([1, 1])
-        
-        with col1:
-            if st.button("Salir", type="primary"):
-                # Limpiar todas las variables de sesión
-                st.session_state.authenticated = False
-                st.session_state.student_data = None
-                st.session_state.verification_step = False
-                st.session_state.verification_code = None
-                st.session_state.phone_verified = False
-                st.session_state.attendance_registered = False
-                st.session_state.registration_info = {}
-                st.rerun()
-        
-        with col2:
-            if st.button("Registrar otra asistencia"):
-                # Mantener algunas variables pero reiniciar el proceso
-                st.session_state.attendance_registered = False
-                st.session_state.registration_info = {}
-                st.rerun()
-        
-        # Mensaje de redirección automática con contador
-        import time
-        placeholder = st.empty()
-        for i in range(15, 0, -1):
-            placeholder.warning(f"Se cerrará automáticamente en {i} segundos...")
-            time.sleep(1)
-        
-        # Después de la cuenta regresiva, limpia todo y regresa al inicio
-        st.session_state.authenticated = False
-        st.session_state.student_data = None
-        st.session_state.verification_step = False
-        st.session_state.verification_code = None
-        st.session_state.phone_verified = False
-        st.session_state.attendance_registered = False
-        st.session_state.registration_info = {}
-        st.rerun()
-        
-        # Detener la ejecución aquí para no mostrar el resto del formulario
-        return
-
-    ####
-    students_df = load_students()
-    
-    argentina_now, current_date, current_time = get_argentina_datetime()
-    
-    st.subheader("Registro de Asistencia")
-    st.info(f"Fecha actual: {current_date.strftime('%d/%m/%Y')} - Hora: {current_time.strftime('%H:%M:%S')} (Hora de Buenos Aires)")
-    
-    # Obtener ID del dispositivo
-    device_id = st.session_state.device_id
-    
-    # Detectar si es dispositivo móvil
-    is_mobile = detect_mobile_device()
-    if not is_mobile:
-        st.warning("⚠️ Este sistema está diseñado para utilizarse desde un dispositivo móvil.")
-    
-    # Lista de DNIs para selección
-    dni_list = [""] + sorted(students_df["dni"].astype(str).unique().tolist())
-    selected_dni = st.selectbox("Seleccione su DNI:", dni_list)
-    
-    if selected_dni:
-        # Obtener datos del estudiante
-        student_data = students_df[students_df["dni"].astype(str) == selected_dni].to_dict('records')
-        
-        if student_data:
-            student_data = student_data[0]
-            st.session_state.student_data = student_data
-            st.info(f"Estudiante: {student_data['apellido_nombre']}")
-            st.info(f"Tecnicatura: {student_data['tecnicatura']}")
-            
-            # Verificación del teléfono
-            student_phone = str(student_data.get('telefono', ''))
-            
-            # FIXED: Simplified verification process
-            # Si el teléfono no está verificado, simplificar proceso
-            if not st.session_state.phone_verified:
-                # Verificación simplificada para móviles
-                if is_mobile and st.checkbox("Este es mi celular registrado", value=False):
-                    st.session_state.phone_verified = True
-                    st.success("Dispositivo móvil reconocido")
-                    st.rerun()
-                else:
-                    st.subheader("Verificación de Presencia")
-                    
-                    # Get student subjects
-                    student_subjects = students_df[students_df["dni"].astype(str) == selected_dni]["materia"].unique().tolist()
-                    
-                    # Show available subjects
-                    if student_subjects:
-                        selected_subject = st.selectbox("Seleccione materia:", student_subjects)
-                        commission = students_df[(students_df["dni"].astype(str) == selected_dni) & 
-                                            (students_df["materia"] == selected_subject)]["comision"].iloc[0]
-                        
-                        verification_method = st.radio(
-                            "Método de verificación:",
-                            ["Escanear código QR", "Ingresar código manualmente"]
-                        )
-                        
-                        if verification_method == "Escanear código QR":
-                            st.info("Escanee el código QR mostrado por el profesor")
-                            uploaded_file = st.camera_input("Escanear código QR")
-                            
-                            if uploaded_file is not None:
-                                # Procesar el código QR
-                                extracted_code = process_qr_code(uploaded_file)
-                                
-                                if extracted_code:
-                                    # Mostrar el código extraído para que el usuario confirme
-                                    st.success(f"Código QR detectado: {extracted_code}")
-                                    
-                                    # Crear una caja de verificación para que el usuario confirme
-                                    confirm = st.checkbox("Confirmar que este es el código correcto", value=True)
-                                    
-                                    # El usuario también puede editar el código si es necesario
-                                    code = st.text_input("Código:", value=extracted_code, max_chars=6, key="qr_code_input")
-                                    
-                                    if st.button("Verificar código", key="verify_qr_code"):
-                                        if verify_classroom_code(code, selected_subject, commission):
-                                            # Register attendance with proper arguments
-                                            device_info = {
-                                                "hostname": socket.gethostname(),
-                                                "ip": get_local_ip(),
-                                                "device_id": device_id
-                                            }
-                                            
-                                            register_attendance_function(
-                                                selected_dni,
-                                                student_data['apellido_nombre'],
-                                                selected_subject,
-                                                commission,
-                                                current_date,
-                                                current_time,
-                                                device_info
-                                            )
-                                        else:
-                                            st.error("Código inválido o expirado")
-                                else:
-                                    st.warning("No se pudo detectar un código QR válido. Por favor, intente de nuevo o ingrese el código manualmente.")
-                                    code = st.text_input("Código:", max_chars=6, key="manual_qr_code_input")
-                                    
-                                    if st.button("Verificar código", key="verify_manual_qr_code"):
-                                        if verify_classroom_code(code, selected_subject, commission):
-                                            # Register attendance with proper arguments
-                                            device_info = {
-                                                "hostname": socket.gethostname(),
-                                                "ip": get_local_ip(),
-                                                "device_id": device_id
-                                            }
-                                            
-                                            register_attendance_function(
-                                                selected_dni,
-                                                student_data['apellido_nombre'],
-                                                selected_subject,
-                                                commission,
-                                                current_date,
-                                                current_time,
-                                                device_info
-                                            )
-                                        else:
-                                            st.error("Código inválido o expirado")
-                                
-                    else:
-                        st.warning("No hay materias disponibles para este estudiante")
-                
-                return # Exit here until verification is complete
-            
-            # Continue with attendance process after verification
-            
-            # Get available subjects for this student
-            student_subjects = students_df[students_df["dni"].astype(str) == selected_dni]["materia"].unique().tolist()
-            
-            # Check which subjects are available at current time
-            schedule_df = load_schedule()
-            available_subjects = []
-
-            for subject in student_subjects:
-                # Obtener la comisión del estudiante para esta materia
-                student_commission = students_df[(students_df["dni"].astype(str) == selected_dni) & 
-                                                (students_df["materia"] == subject)]["comision"].iloc[0]
-                
-                # Filtrar horarios por materia y comisión
-                subject_schedule = schedule_df[(schedule_df["MATERIA"] == subject) & 
-                                            (schedule_df["COMISION"] == student_commission)]
-                
-                if not subject_schedule.empty:
-                    for _, row in subject_schedule.iterrows():
-                        if validate_time_for_subject(current_date, current_time, row["FECHA"], row["INICIO"], row["FINAL"]):
-                            st.write(f"¡Materia disponible encontrada!")
-                            available_subjects.append(subject)
-                            break  # Si encontramos al menos un horario válido, añadimos la materia
-
-            if available_subjects:
-                selected_subject = st.selectbox("Materia disponible:", available_subjects)
-                commission = students_df[(students_df["dni"].astype(str) == selected_dni) & 
-                                    (students_df["materia"] == selected_subject)]["comision"].iloc[0]
-                
-                # Check if attendance already registered
-                attendance_df = load_attendance()
-                if is_attendance_registered(attendance_df, selected_dni, selected_subject, current_date):
-                    st.warning("Ya registró su asistencia para esta materia hoy.")
-                else:
-                    # Check if device valid
-                    device_valid = validate_device_for_subject(device_id, selected_subject, current_date.strftime('%Y-%m-%d'))
-                    
-                    if not device_valid:
-                        st.error("Este dispositivo ya fue utilizado para registrar asistencia en esta materia y fecha.")
-                    else:
-                        # QR code verification - offer two options
-                        verification_method = st.radio(
-                            "Método de verificación:",
-                            ["Escanear código QR", "Ingresar código manualmente"]
-                        )
-                        
-                        if verification_method == "Escanear código QR":
-                            st.info("Escanee el código QR mostrado por el profesor")
-                            uploaded_file = st.camera_input("Tomar foto del código QR")
-                            
-                            if uploaded_file is not None:
-                                st.info("Procesamiento de QR en desarrollo. Por favor, ingrese el código manualmente.")
-                                code = st.text_input("Código:", max_chars=6, key="qr_code_input")
-                                
-                                if st.button("Verificar código", key="verify_qr_code"):
-                                    if verify_classroom_code(code, selected_subject, commission):
-                                        # FIXED: Register attendance with proper arguments
-                                        device_info = {
-                                            "hostname": socket.gethostname(),
-                                            "ip": get_local_ip(),
-                                            "device_id": device_id
-                                        }
-                                        
-                                        register_attendance_function(
-                                            selected_dni,
-                                            student_data['apellido_nombre'],
-                                            selected_subject,
-                                            commission,
-                                            current_date,
-                                            current_time,
-                                            device_info
-                                        )
-                                    else:
-                                        st.error("Código inválido o expirado")
-                                        
-                        else:  # Manual code entry
-                            st.info("Ingrese el código mostrado por el profesor")
-                            code = st.text_input("Código:", max_chars=6, key="manual_code_input")
-                            
-                            if st.button("Verificar código", key="verify_manual_code"):
-                                if verify_classroom_code(code, selected_subject, commission):
-                                    # FIXED: Register attendance with proper arguments
-                                    device_info = {
-                                        "hostname": socket.gethostname(),
-                                        "ip": get_local_ip(),
-                                        "device_id": device_id
-                                    }
-                                    
-                                    register_attendance_function(
-                                        selected_dni,
-                                        student_data['apellido_nombre'],
-                                        selected_subject,
-                                        commission,
-                                        current_date,
-                                        current_time,
-                                        device_info
-                                    )
-                                else:
-                                    st.error("Código inválido o expirado")
-            else:
-                st.warning("No hay materias disponibles en este horario.")
-        else:
-            st.error("DNI no encontrado en el sistema.")
-
-# FIXED: Function to register attendance with all required parameters
-def register_attendance_function(selected_dni, student_name, selected_subject, commission, current_date, current_time, device_info):
-    # Guardar asistencia
-    save_attendance(
-        selected_dni,
-        student_name,
-        selected_subject,
-        commission,
-        current_date.strftime('%Y-%m-%d'),
-        current_time.strftime('%H:%M:%S'),
-        device_info["hostname"],
-        device_info["ip"],
-        device_info["device_id"]
-    )
-    
-    # En lugar de reiniciar inmediatamente, establecer estado de confirmación
-    st.session_state.attendance_registered = True
-    st.session_state.registration_info = {
-        "student_name": student_name,
-        "subject": selected_subject,
-        "time": current_time.strftime('%H:%M:%S'),
-        "date": current_date.strftime('%d/%m/%Y')
-    }
-    st.rerun()
-    
+########################  
 # Main app
 def main():
     try:
