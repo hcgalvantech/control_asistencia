@@ -82,18 +82,32 @@ def save_attendance(dni, name, subject, commission, date, time, device, ip, devi
     }
     
     try:
+        # Intentar insertar en la tabla de asistencia
         supabase.table('attendance').insert(data).execute()
         
-        # También guardar uso del dispositivo
-        device_data = {
-            'DEVICE_ID': device_id,
-            'DNI': dni,
-            'MATERIA': subject,
-            'FECHA': date,
-            'TIMESTAMP': datetime.datetime.now().isoformat()
-        }
-        supabase.table('device_usage').insert(device_data).execute()
-        return True
+        try:
+            # Intentar insertar en device_usage
+            device_data = {
+                'DEVICE_ID': device_id,
+                'DNI': dni,
+                'MATERIA': subject,
+                'FECHA': date,
+                'TIMESTAMP': datetime.datetime.now().isoformat()
+            }
+            supabase.table('device_usage').insert(device_data).execute()
+            return True
+        except Exception as device_error:
+            error_str = str(device_error)
+            if "23505" in error_str:  # Código de error para violación de clave única
+                st.warning("Este dispositivo ya ha sido utilizado para registrar asistencia en esta materia hoy.")
+                # Ya tenemos la asistencia registrada, así que podríamos considerarlo un éxito
+                return True
+            else:
+                # Otros errores relacionados con device_usage
+                st.error(f"Error al registrar uso del dispositivo: {error_str}")
+                # Revertir la entrada de asistencia ya que el registro de dispositivo falló
+                supabase.table('attendance').delete().eq('DNI', dni).eq('MATERIA', subject).eq('FECHA', date).execute()
+                return False
     except Exception as e:
         st.error(f"Error al guardar asistencia: {str(e)}")
         return False
