@@ -212,3 +212,49 @@ def get_device_id():
     device_hash = hashlib.md5(combined.encode()).hexdigest()
     
     return device_hash
+
+def get_device_id_from_phone(phone_number):
+    """
+    Genera un device_id basado en el número de teléfono del estudiante
+    """
+    import hashlib
+    import uuid
+    
+    # Limpiar número de teléfono (quitar espacios, guiones, etc.)
+    clean_phone = ''.join(filter(str.isdigit, str(phone_number)))
+    
+    # Agregar algunos datos del dispositivo para mayor unicidad
+    try:
+        mac = extract_mac_address()
+        if mac == "00:00:00:00:00:00":
+            mac = str(uuid.uuid4())  # Fallback único
+    except:
+        mac = str(uuid.uuid4())
+    
+    # Combinar teléfono + MAC (o UUID único)
+    combined = f"{clean_phone}_{mac}"
+    device_hash = hashlib.sha256(combined.encode()).hexdigest()[:16]
+    
+    return device_hash
+
+def generate_session_device_id():
+    """
+    Genera un ID único por sesión de navegador usando timestamp y random
+    """
+    import time
+    import random
+    import hashlib
+    
+    timestamp = str(int(time.time() * 1000))  # milliseconds
+    random_part = str(random.randint(100000, 999999))
+    
+    # Intentar obtener algo único del dispositivo
+    try:
+        mac = extract_mac_address()
+        if mac == "00:00:00:00:00:00":
+            mac = str(random.randint(1000000, 9999999))
+    except:
+        mac = str(random.randint(1000000, 9999999))
+    
+    combined = f"{timestamp}_{random_part}_{mac}"
+    return hashlib.md5(combined.encode()).hexdigest()[:12]

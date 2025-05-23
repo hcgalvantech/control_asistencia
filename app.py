@@ -1,5 +1,7 @@
+
 import qrcode
 import streamlit as st
+from functools import lru_cache
 import pandas as pd
 import datetime
 import os
@@ -13,8 +15,26 @@ from pyzbar.pyzbar import decode
 import io
 import numpy as np
 import cv2
+
+# MOVER set_page_config AL INICIO - DEBE SER EL PRIMER COMANDO DE STREAMLIT
+# AL INICIO del archivo, después de imports:
+st.set_page_config(
+    page_title="Sistema de Asistencia",
+    page_icon="📚",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
+
+# AGREGAR configuración de performance:
+if 'performance_mode' not in st.session_state:
+    st.session_state.performance_mode = True
+
 from utils import validate_time_for_subject, detect_mobile_device
-from network import check_wifi_connection, is_ip_in_allowed_range, get_local_ip, get_argentina_datetime, get_device_id
+from network import (
+    check_wifi_connection, is_ip_in_allowed_range, get_local_ip, 
+    get_argentina_datetime, get_device_id, get_device_id_from_phone,
+    generate_session_device_id
+)
 # Importamos todas las funciones de database
 from database import (
     load_students, load_attendance, load_schedule, load_admin_config, 
@@ -27,57 +47,96 @@ from database import (
 # Detectar si estamos en Streamlit Cloud
 if not os.environ.get('STREAMLIT_SHARING'):
     os.environ['STREAMLIT_SHARING'] = 'true'
-    
-# Set page config
-st.set_page_config(
-    page_title="Sistema de Asistencia",
-    page_icon="📚",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
 
-# Sidebar for navigation
+# 1. CACHEAR DATOS PESADOS
+@st.cache_data(ttl=300, show_spinner="Cargando estudiantes...")
+def load_students_cached():
+    return load_students()
+
+@st.cache_data(ttl=300, show_spinner="Cargando horarios...")  
+def load_schedule_cached():
+    return load_schedule()
+
+@st.cache_data(ttl=60, show_spinner="Cargando asistencia...")
+def load_attendance_cached():
+    return load_attendance()
+
+# FUNCIÓN SIDEBAR CORREGIDA
 def sidebar():
     with st.sidebar:
         st.title("Menú")
-        if st.session_state.admin_mode:
+        
+        if st.session_state.get('admin_mode', False):
             st.info("Modo Administrador Activo")
-            if st.button("Cerrar Sesión de Admin"):
+            if st.button("Cerrar Sesión de Admin", key="logout_admin"):
                 st.session_state.admin_mode = False
+                st.session_state.temp_show_admin = False
                 st.rerun()
         else:
-            if st.button("Acceso Administrador"):
+            if st.button("Acceso Administrador", key="access_admin"):
                 st.session_state.temp_show_admin = True
                 st.rerun()
         
-        if not st.session_state.admin_mode and st.session_state.authenticated:
-            if st.button("Cerrar Sesión de Estudiante"):
+        if not st.session_state.get('admin_mode', False) and st.session_state.get('authenticated', False):
+            if st.button("Cerrar Sesión de Estudiante", key="logout_student"):
                 st.session_state.authenticated = False
                 st.session_state.student_data = None
                 st.session_state.verification_step = False
                 st.session_state.verification_code = None
                 st.session_state.phone_verified = False
                 st.rerun()
-                
-# Inicializar variables de estado de sesión
-if 'attendance_registered' not in st.session_state:
-    st.session_state.attendance_registered = False
-if 'registration_info' not in st.session_state:
-    st.session_state.registration_info = {}
-if 'authenticated' not in st.session_state:
-    st.session_state.authenticated = False
-if 'student_data' not in st.session_state:
-    st.session_state.student_data = None
-if 'admin_mode' not in st.session_state:
-    st.session_state.admin_mode = False
-if 'verification_step' not in st.session_state:
-    st.session_state.verification_step = False
-if 'verification_code' not in st.session_state:
-    st.session_state.verification_code = None
-if 'phone_verified' not in st.session_state:
-    st.session_state.phone_verified = False
-if 'device_id' not in st.session_state:
-    st.session_state.device_id = get_device_id()
+
+# 2. OPTIMIZAR SESSION STATE - CORREGIDO
+# OPTIMIZAR initialize_session_state():
+def initialize_session_state():
+    """Inicializar solo una vez todas las variables"""
+    if st.session_state.get('initialized', False):
+        return  # Ya inicializado
+    
+    defaults = {
+        'attendance_registered': False,
+        'registration_info': {},
+        'authenticated': False,
+        'student_data': None,
+        'admin_mode': False,
+        'temp_show_admin': False,
+        'verification_step': False,
+        'verification_code': None,
+        'phone_verified': False,
+        'device_id': get_device_id(),
+        'data_loaded': False,
+        'students_df': None,
+        'schedule_df': None,
+        'attendance_loaded': False,  # NUEVO
+        'filtered_attendance': None,  # NUEVO
+        'last_filter': None,  # NUEVO
+        'initialized': True  # NUEVO
+    }
+    
+    # Batch update en lugar de loop
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+# 3. CARGAR DATOS UNA SOLA VEZ
+@st.cache_data(ttl=300)
+def get_cached_data():
+    """Cargar todos los datos de una vez y cachearlos juntos"""
+    return {
+        'students': load_students(),
+        'schedule': load_schedule(),
+        'attendance': load_attendance()
+    }
+
+def load_data_once():
+    """Cargar datos solo si no están en session state"""
+    if not st.session_state.get('data_loaded', False):
+        with st.spinner("Cargando datos del sistema..."):
+            cached_data = get_cached_data()
+            st.session_state.students_df = cached_data['students']
+            st.session_state.schedule_df = cached_data['schedule']
+            st.session_state.attendance_df = cached_data['attendance']
+            st.session_state.data_loaded = True
 
 # Crear función para generar código aleatorio
 def generate_classroom_code():
@@ -149,25 +208,32 @@ def process_qr_code(uploaded_file):
         return None
 
 # Función para validar red
-def validate_network():
+# CACHE para validaciones de red
+@st.cache_data(ttl=60)  # Cache por 1 minuto
+def validate_network_cached():
     admin_config = load_admin_config()
     allowed_ranges = admin_config.get("allowed_ip_ranges", ["192.168.1.0/24"])
     
-    # Si estamos en desarrollo local (localhost), omitir verificación de red
     client_ip = get_local_ip()
     if client_ip == "127.0.0.1" or client_ip.startswith("localhost"):
-        st.info("Ejecutando en modo de desarrollo local")
-        return True
+        return True, "Modo desarrollo local"
         
     if not check_wifi_connection():
-        st.error("❌ Debe estar conectado a una red WiFi para utilizar el sistema")
-        return False
+        return False, "❌ Debe estar conectado a una red WiFi"
     
     if not is_ip_in_allowed_range(client_ip, allowed_ranges):
-        st.error(f"❌ Su dirección IP ({client_ip}) está fuera del rango permitido")
-        return False
+        return False, f"❌ Su dirección IP ({client_ip}) está fuera del rango permitido"
         
-    return True
+    return True, "Red válida"
+
+# USAR en lugar de validate_network():
+def validate_network():
+    is_valid, message = validate_network_cached()
+    if not is_valid:
+        st.error(message)
+    elif "desarrollo" in message:
+        st.info(message)
+    return is_valid
 
 # Función para generar código de verificación
 def generate_verification_code(dni, phone):
@@ -211,13 +277,50 @@ def register_attendance_function(selected_dni, student_name, selected_subject, c
     else:
         st.error("Error al registrar la asistencia. Intente nuevamente.")
 
-# Función para autenticación de estudiante (modificada para corregir el error de DNI)
-def student_login():
+# 4. OPTIMIZAR STUDENT_LOGIN
+# AGREGAR estas funciones optimizadas:
+@st.cache_data(ttl=300)
+def get_student_subjects_cached(dni, students_df):
+    """Cache de materias por estudiante"""
+    return students_df[students_df["dni"].astype(str) == dni]["materia"].unique().tolist()
+
+@st.cache_data(ttl=300) 
+def get_student_commission_cached(dni, subject, students_df):
+    """Cache de comisión por estudiante y materia"""
+    result = students_df[(students_df["dni"].astype(str) == dni) & 
+                        (students_df["materia"] == subject)]["comision"]
+    return result.iloc[0] if not result.empty else None
+            
+def student_login_optimized():
+    # Progress bar para carga inicial
+    if not st.session_state.get('data_loaded', False):
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        status_text.text('Cargando datos de estudiantes...')
+        progress_bar.progress(25)
+        load_data_once()
+        
+        status_text.text('Validando red...')
+        progress_bar.progress(50)
+        if not validate_network():
+            return
+            
+        status_text.text('Preparando interfaz...')
+        progress_bar.progress(100)
+        
+        # Limpiar indicadores
+        progress_bar.empty()
+        status_text.empty()
+
+    # Usar datos del session state
+    students_df = st.session_state.students_df
+        
     st.title("Sistema de Registro de Asistencia")
     
     # Validación de red
     if not validate_network():
-        return
+       return
         
     # Mostrar confirmación si la asistencia ya está registrada
     if st.session_state.attendance_registered:
@@ -273,9 +376,6 @@ def student_login():
         # Detener la ejecución aquí para no mostrar el resto del formulario
         return
 
-    ####
-    students_df = load_students()
-    
     argentina_now, current_date, current_time = get_argentina_datetime()
     
     st.subheader("Registro de Asistencia")
@@ -299,7 +399,7 @@ def student_login():
         
         if student_data:
             student_data = student_data[0]
-            st.session_state.student_data = student_data
+            student_phone = str(student_data.get('telefono', ''))
             # CORRECCIÓN: Usamos "apellido_nombre" en lugar de "APELLIDO Y NOMBRE"
             st.info(f"Estudiante: {student_data['apellido_nombre']}")
             st.info(f"Tecnicatura: {student_data['tecnicatura']}")
@@ -307,6 +407,15 @@ def student_login():
             # Verificación del teléfono
             student_phone = str(student_data.get('telefono', ''))
             
+            # NUEVA LÓGICA: Generar device_id basado en teléfono
+            if student_phone:
+                device_id = get_device_id_from_phone(student_phone)
+            else:
+                device_id = generate_session_device_id()            
+            
+            # Actualizar session_state
+            st.session_state.device_id = device_id
+                        
             # Proceso de verificación simplificado
             if not st.session_state.phone_verified:
                 # Verificación simplificada para móviles
@@ -318,8 +427,8 @@ def student_login():
                     st.subheader("Verificación de Presencia")
                     
                     # CORRECCIÓN: Usamos "materia" en minúscula
-                    student_subjects = students_df[students_df["dni"].astype(str) == selected_dni]["materia"].unique().tolist()
-                    
+                    # student_subjects = students_df[students_df["dni"].astype(str) == selected_dni]["materia"].unique().tolist()
+                    student_subjects = get_student_subjects_cached(selected_dni, students_df)
                     if student_subjects:
                         selected_subject = st.selectbox("Seleccione materia:", student_subjects)
                         # CORRECCIÓN: Usamos "comision" en minúscula
@@ -393,6 +502,29 @@ def student_login():
                                             )
                                         else:
                                             st.error("Código inválido o expirado")
+                        else:  # Ingresar código manualmente
+                            st.info("Ingrese el código mostrado por el profesor")
+                            code = st.text_input("Código:", max_chars=6, key="manual_code_input_verification")
+                            
+                            if st.button("Verificar código", key="verify_manual_code_verification"):
+                                if verify_classroom_code(code, selected_subject, commission):
+                                    device_info = {
+                                        "hostname": socket.gethostname(),
+                                        "ip": get_local_ip(),
+                                        "device_id": device_id
+                                    }
+                                    
+                                    register_attendance_function(
+                                        selected_dni,
+                                        student_data['apellido_nombre'],
+                                        selected_subject,
+                                        commission,
+                                        current_date,
+                                        current_time,
+                                        device_info
+                                    )
+                                else:
+                                    st.error("Código inválido o expirado")
                                 
                     else:
                         st.warning("No hay materias disponibles para este estudiante")
@@ -405,7 +537,7 @@ def student_login():
             student_subjects = students_df[students_df["dni"].astype(str) == selected_dni]["materia"].unique().tolist()
             
             # Check which subjects are available at current time
-            schedule_df = load_schedule()
+            schedule_df = st.session_state.schedule_df
             available_subjects = []
 
             for subject in student_subjects:
@@ -433,9 +565,10 @@ def student_login():
                 if is_attendance_registered(selected_dni, selected_subject, current_date):
                     st.warning("Ya registró su asistencia para esta materia hoy.")
                 else:
-                    # Check if device valid
-                    device_valid = validate_device_for_subject(device_id, selected_subject, current_date.strftime('%Y-%m-%d'))
                     
+                    # Check if device valid
+                    device_valid = validate_device_for_subject(device_id, selected_dni, selected_subject, current_date.strftime('%Y-%m-%d'))
+            
                     if not device_valid:
                         st.error("Este dispositivo ya fue utilizado para registrar asistencia en esta materia y fecha.")
                     else:
@@ -507,92 +640,137 @@ def student_login():
                 st.warning("No hay materias disponibles en este horario.")
         else:
             st.error("DNI no encontrado en el sistema.")
-#############################
-# Función para el login de administrador
-#############################
-# Admin login form
+
+# ADMIN LOGIN CORREGIDO
 def admin_login():
     st.subheader("Acceso Administrador")
     admin_config = load_admin_config()
-    username = st.text_input("Usuario")
-    password = st.text_input("Contraseña", type="password")
+    username = st.text_input("Usuario", key="admin_username")
+    password = st.text_input("Contraseña", type="password", key="admin_password")
     
-    if st.button("Ingresar como Admin"):
-        if username == admin_config["admin_username"] and password == admin_config["admin_password"]:
-            st.session_state.admin_mode = True
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("Ingresar como Admin", key="login_admin_btn"):
+            if username == admin_config["admin_username"] and password == admin_config["admin_password"]:
+                st.session_state.admin_mode = True
+                st.session_state.temp_show_admin = False
+                st.success("Acceso concedido")
+                st.rerun()
+            else:
+                st.error("Usuario o contraseña incorrectos")
+    
+    with col2:
+        if st.button("Cancelar", key="cancel_admin_btn"):
             st.session_state.temp_show_admin = False
-            st.success("Acceso concedido")
             st.rerun()
-        else:
-            st.error("Usuario o contraseña incorrectos")
-    
-    if st.button("Cancelar"):
-        st.session_state.temp_show_admin = False
-        st.rerun()
 
-# In the admin section - FIXED AND COMPLETED
-def admin_dashboard():
+# 7. OPTIMIZAR CONSULTAS A BD
+@st.cache_data(ttl=60)
+def check_attendance_exists(dni, subject, date):
+    """Cache para verificar asistencia existente"""
+    return is_attendance_registered(dni, subject, date)
+
+# 8. LAZY LOADING PARA ADMIN
+# REEMPLAZAR admin_dashboard_optimized() con:
+def admin_dashboard_optimized():
     st.title("Panel Administrativo")
-    
-    tab1, tab2, tab3, tab4 = st.tabs(["Asistencia", "Generador de Códigos", "Gestión de Horarios", "Configuración"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Asistencia", "Códigos", "Horarios", "Config"])
     
     with tab1:
-        st.subheader("Control de Asistencia")
-        
-        # Cargar datos de asistencia
-        attendance_df = load_attendance()
-        
-        if attendance_df.empty:
-            st.warning("No hay registros de asistencia disponibles.")
+        # LAZY LOADING REAL - Solo cargar cuando se necesite
+        if st.button("Cargar Datos de Asistencia") or st.session_state.get('attendance_loaded', False):
+            if not st.session_state.get('attendance_loaded', False):
+                with st.spinner("Cargando asistencia..."):
+                    st.session_state.attendance_data = load_attendance_cached()
+                    st.session_state.attendance_loaded = True
+            
+            attendance_df = st.session_state.attendance_data
+            
+            if attendance_df.empty:
+                st.warning("No hay registros de asistencia disponibles.")
+            else:
+                # Pagination para datasets grandes
+                items_per_page = 50
+                total_items = len(attendance_df)
+                
+                if total_items > items_per_page:
+                    page = st.number_input("Página", min_value=1, 
+                                         max_value=(total_items // items_per_page) + 1, 
+                                         value=1)
+                    start_idx = (page - 1) * items_per_page
+                    end_idx = start_idx + items_per_page
+                    paginated_df = attendance_df.iloc[start_idx:end_idx]
+                    st.info(f"Mostrando registros {start_idx + 1}-{min(end_idx, total_items)} de {total_items}")
+                else:
+                    paginated_df = attendance_df
+                
+                # Filtros optimizados
+                col1, col2 = st.columns(2)
+                with col1:
+                    if 'FECHA' in attendance_df.columns:
+                        fechas = ["Todas"] + sorted(attendance_df["FECHA"].unique().tolist(), reverse=True)
+                        fecha_seleccionada = st.selectbox("Fecha:", fechas)
+                
+                with col2:
+                    if 'MATERIA' in attendance_df.columns:
+                        materias = ["Todas"] + sorted(attendance_df["MATERIA"].unique().tolist())
+                        materia_seleccionada = st.selectbox("Materia:", materias)
+                
+                # Aplicar filtros solo si cambiaron
+                filter_key = f"{fecha_seleccionada}_{materia_seleccionada}"
+                if st.session_state.get('last_filter') != filter_key:
+                    filtered_df = paginated_df.copy()
+                    
+                    if fecha_seleccionada != "Todas":
+                        filtered_df = filtered_df[filtered_df["FECHA"] == fecha_seleccionada]
+                    if materia_seleccionada != "Todas":
+                        filtered_df = filtered_df[filtered_df["MATERIA"] == materia_seleccionada]
+                    
+                    st.session_state.filtered_attendance = filtered_df
+                    st.session_state.last_filter = filter_key
+                else:
+                    filtered_df = st.session_state.get('filtered_attendance', paginated_df)
+                
+                # Mostrar dataframe
+                st.write(f"Mostrando {len(filtered_df)} registros de asistencia")
+                st.dataframe(filtered_df, use_container_width=True)
+                
+                # ==================== AGREGAR AQUÍ LA EXPORTACIÓN ====================
+                # Exportar datos
+                if len(filtered_df) > 0:  # Solo mostrar si hay datos para exportar
+                    st.write("---")  # Separador visual
+                    
+                    col1, col2 = st.columns([1, 1])
+                    
+                    with col1:
+                        if st.button("Exportar a CSV", type="secondary"):
+                            export_filename = f"asistencia_{fecha_seleccionada}_{materia_seleccionada}.csv"
+                            export_filename = export_filename.replace("Todas", "completo").replace(" ", "_")
+                            
+                            # Crear archivo CSV para descargar
+                            csv = filtered_df.to_csv(index=False)
+                            st.success(f"CSV preparado: {len(filtered_df)} registros")
+                    
+                    with col2:
+                        if 'csv' in locals():  # Si se generó el CSV
+                            st.download_button(
+                                label="⬇️ Descargar CSV",
+                                data=csv,
+                                file_name=export_filename,
+                                mime="text/csv",
+                                type="primary"
+                            )
+                # ==================== FIN DE LA EXPORTACIÓN ====================
+                
         else:
-            # Filtros para la asistencia
-            st.write("Filtros:")
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # Filtro por fecha
-                if 'FECHA' in attendance_df.columns:
-                    fechas = ["Todas"] + sorted(attendance_df["FECHA"].unique().tolist(), reverse=True)
-                    fecha_seleccionada = st.selectbox("Fecha:", fechas)
-            
-            with col2:
-                # Filtro por materia
-                if 'MATERIA' in attendance_df.columns:
-                    materias = ["Todas"] + sorted(attendance_df["MATERIA"].unique().tolist())
-                    materia_seleccionada = st.selectbox("Materia:", materias)
-            
-            # Aplicar filtros
-            filtered_df = attendance_df.copy()
-            
-            if fecha_seleccionada != "Todas":
-                filtered_df = filtered_df[filtered_df["FECHA"] == fecha_seleccionada]
-                
-            if materia_seleccionada != "Todas":
-                filtered_df = filtered_df[filtered_df["MATERIA"] == materia_seleccionada]
-            
-            # Mostrar datos filtrados
-            st.write(f"Mostrando {len(filtered_df)} registros de asistencia")
-            st.dataframe(filtered_df)
-            
-            # Exportar datos
-            if st.button("Exportar a CSV"):
-                export_filename = f"asistencia_{fecha_seleccionada}_{materia_seleccionada}.csv"
-                export_filename = export_filename.replace("Todas", "completo")
-                
-                # Crear archivo CSV para descargar
-                csv = filtered_df.to_csv(index=False)
-                st.download_button(
-                    label="Descargar CSV",
-                    data=csv,
-                    file_name=export_filename,
-                    mime="text/csv"
-                )
+            st.info("Haga clic en 'Cargar Datos de Asistencia' para ver los registros")
         
     with tab2:
         st.subheader("Generador de Códigos de Clase")
-        
+       
         # Load subjects and commissions
-        schedule_df = load_schedule()
+        schedule_df = st.session_state.schedule_df
         subjects = schedule_df["MATERIA"].unique().tolist()
         
         selected_subject = st.selectbox("Seleccione materia:", subjects)
@@ -686,7 +864,8 @@ def gestionar_horarios():
     st.write("### Horarios de Materias")
     
     # Cargar datos actuales
-    schedule_df = load_schedule()
+    # schedule_df = load_schedule()
+    schedule_df = st.session_state.schedule_df
     
     # Mostrar horarios actuales
     if not schedule_df.empty:
@@ -816,7 +995,8 @@ def gestionar_alumnos():
     st.write("### Gestión de Alumnos")
     
     # Cargar datos de alumnos
-    students_df = load_students()
+    # students_df = load_students()
+    students_df = st.session_state.students_df
     
     # Mostrar alumnos actuales
     if not students_df.empty:
@@ -893,7 +1073,8 @@ def gestionar_alumnos():
                     
                     if opcion_materia == "Agregar Materia":
                         # Cargar lista de materias disponibles
-                        schedule_df = load_schedule()
+                        # schedule_df = load_schedule()
+                        schedule_df = st.session_state.schedule_df
                         materias_disponibles = sorted(schedule_df["MATERIA"].unique().tolist()) if not schedule_df.empty else []
                         
                         if materias_disponibles:
@@ -960,7 +1141,8 @@ def gestionar_alumnos():
     agregar_materia = st.checkbox("Asignar materia ahora")
     
     if agregar_materia:
-        schedule_df = load_schedule()
+        #schedule_df = load_schedule()
+        schedule_df = st.session_state.schedule_df
         materias_disponibles = sorted(schedule_df["MATERIA"].unique().tolist()) if not schedule_df.empty else []
         
         if materias_disponibles:
@@ -1001,23 +1183,36 @@ def gestionar_alumnos():
                 st.rerun()
         else:
             st.error("Debe completar DNI, Nombre y Tecnicatura")
+        
+# 9. OPTIMIZAR VALIDACIONES
+@lru_cache(maxsize=128)
+def validate_time_cached(current_date, current_time, class_date, start_time, end_time):
+    """Cache validaciones de tiempo"""
+    return validate_time_for_subject(current_date, current_time, class_date, start_time, end_time)
+
 ########################  
 # Main app
+# 10. MAIN FUNCTION OPTIMIZADA
 def main():
+    # Inicializar session state una sola vez
+    initialize_session_state()
+    
     try:
-        if not st.session_state.admin_mode and hasattr(st.session_state, 'temp_show_admin') and st.session_state.temp_show_admin:
-            admin_login()
+        # SIEMPRE renderizar el sidebar para que se actualice correctamente
+        sidebar()
         
-        # When admin is authenticated:
+        # Lógica principal sin reruns innecesarios
         if st.session_state.admin_mode:
-            admin_dashboard()
+            admin_dashboard_optimized()
         else:
-            # Your existing student login code
-            student_login()
+            if st.session_state.get('temp_show_admin', False):  # Usar .get() por seguridad
+                admin_login()
+            else:
+                student_login_optimized()
+                
     except Exception as e:
-        st.error(f"Detailed Error Message: {str(e)}")
-          
-    sidebar()
+        st.error(f"Error: {str(e)}")
+
     
 if __name__ == "__main__":
     main()
