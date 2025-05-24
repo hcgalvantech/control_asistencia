@@ -249,10 +249,82 @@ def phone_verification(dni, phone):
     st.success("Verificación completada")
     st.rerun()
 
-# Función para registrar asistencia
+def register_attendance_transaction(dni, name, subject, commission, date, time, device, ip, device_id):
+    """Guardar registro de asistencia usando una transacción para evitar duplicados"""
+    supabase = get_supabase_client()
+    if not supabase:
+        return False, "No se pudo conectar a la base de datos"
+    
+    # Asegurar formato de fecha para Supabase
+    if isinstance(date, str) and '/' in date:
+        # Convertir dd/mm/yyyy a formato ISO
+        date_parts = date.split('/')
+        date = f"{date_parts[2]}-{date_parts[1]}-{date_parts[0]}"
+    
+    try:
+        # Verificar si el dispositivo ya fue usado para esta materia y fecha
+        device_check = supabase.table('device_usage')\
+            .select('*')\
+            .eq('DEVICE_ID', device_id)\
+            .eq('MATERIA', subject)\
+            .eq('FECHA', date)\
+            .execute()
+        
+        if len(device_check.data) > 0:
+            return False, "Este dispositivo ya ha sido utilizado para registrar asistencia en esta materia y fecha"
+        
+        # Verificar si la asistencia ya está registrada
+        attendance_check = supabase.table('attendance')\
+            .select('*')\
+            .eq('DNI', dni)\
+            .eq('MATERIA', subject)\
+            .eq('FECHA', date)\
+            .execute()
+        
+        if len(attendance_check.data) > 0:
+            return False, "Ya registraste tu asistencia para esta materia y fecha"
+        
+        # Datos a insertar
+        attendance_data = {
+            'DNI': dni,
+            'APELLIDO Y NOMBRE': name,
+            'MATERIA': subject,
+            'COMISION': commission,
+            'FECHA': date,
+            'HORA': time,
+            'DISPOSITIVO': device,
+            'IP': ip,
+            'DEVICE_ID': device_id
+        }
+        
+        device_data = {
+            'DEVICE_ID': device_id,
+            'DNI': dni,
+            'MATERIA': subject,
+            'FECHA': date,
+            'TIMESTAMP': datetime.datetime.now().isoformat()
+        }
+        
+        # Realizar ambas inserciones
+        supabase.table('attendance').insert(attendance_data).execute()
+        supabase.table('device_usage').insert(device_data).execute()
+        
+        return True, "Asistencia registrada correctamente"
+        
+    except Exception as e:
+        error_msg = str(e)
+        # Si es error de clave duplicada
+        if "23505" in error_msg:
+            if "device_usage" in error_msg:
+                return False, "Este dispositivo ya fue utilizado para registrar asistencia en esta materia y fecha"
+            else:
+                return False, "Ya existe un registro con estos datos"
+        else:
+            return False, f"Error al registrar asistencia: {error_msg}"
+
+# Para utilizarse en la función de la aplicación principal:
 def register_attendance_function(selected_dni, student_name, selected_subject, commission, current_date, current_time, device_info):
-    # Guardar asistencia
-    success = save_attendance(
+    success, message = register_attendance_transaction(
         selected_dni,
         student_name,
         selected_subject,
@@ -265,7 +337,6 @@ def register_attendance_function(selected_dni, student_name, selected_subject, c
     )
     
     if success:
-        # Establecer estado de confirmación
         st.session_state.attendance_registered = True
         st.session_state.registration_info = {
             "student_name": student_name,
@@ -273,9 +344,10 @@ def register_attendance_function(selected_dni, student_name, selected_subject, c
             "time": current_time.strftime('%H:%M:%S'),
             "date": current_date.strftime('%d/%m/%Y')
         }
+        st.success(message)
         st.rerun()
     else:
-        st.error("Error al registrar la asistencia. Intente nuevamente.")
+        st.error(message)
 
 # 4. OPTIMIZAR STUDENT_LOGIN
 # AGREGAR estas funciones optimizadas:
