@@ -236,20 +236,26 @@ def verify_classroom_code(code, subject, commission):
     
     return len(response.data) > 0
 
-def validate_device_for_subject(device_id, subject, date):
-    """Verificar si el dispositivo ya fue usado para esta materia y fecha"""
+# En database.py - Modifica esta función:
+def validate_device_for_subject(device_id, dni, subject, date):
+    """
+    Verificar si el dispositivo ya fue usado por OTRO estudiante para esta materia y fecha
+    Permitir que el mismo estudiante use el mismo dispositivo
+    """
     supabase = get_supabase_client()
     if not supabase:
-        return True  # Por defecto permitir si no podemos verificar
+        return True
     
+    # Buscar si este dispositivo fue usado por OTRO DNI en esta materia/fecha
     response = supabase.table('device_usage')\
         .select('*')\
         .eq('DEVICE_ID', device_id)\
         .eq('MATERIA', subject)\
         .eq('FECHA', date)\
-        .execute()
+        .neq('DNI', dni)\
+        .execute()  # Solo rechazar si es OTRO estudiante
     
-    return len(response.data) == 0  # Si no hay registros, el dispositivo es válido
+    return len(response.data) == 0
 
 ##########################
 def save_admin_config(config):
